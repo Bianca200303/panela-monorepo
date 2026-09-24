@@ -597,7 +597,13 @@ export default function BunquesPage() {
 
   const visibleBunques = bunques.filter(b => {
     if (bunqueFilter.trim() && !b.bunque_number.toLowerCase().includes(bunqueFilter.trim().toLowerCase())) return false
-    if (soloConDisponible && bunqueSinRepartir(b) <= 0.01) return false
+    // El filtro "sin repartir" es para ocultar bunques YA tamizados y
+    // completamente repartidos (nada pendiente) -- un bunque recién creado
+    // (tamizada_kg todavía null, ni siquiera tamizado) no es lo mismo que
+    // uno "sin nada pendiente", y no debe esconderse o desaparece de la
+    // lista apenas se crea (bug real: encontrado en vivo, hacía que se
+    // cresee bunques vacíos repetidos porque el recién creado no aparecía).
+    if (soloConDisponible && b.tamizada_kg != null && bunqueSinRepartir(b) <= 0.01) return false
     return true
   })
 
