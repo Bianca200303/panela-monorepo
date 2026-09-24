@@ -432,9 +432,6 @@ export default function CalidadPage() {
       {showDevoluciones && (
         <div className="card" style={{ marginTop: 16, marginBottom: 8 }}>
           <h4 style={{ margin: '0 0 4px' }}>Historial de devoluciones</h4>
-          <p className="muted small" style={{ margin: '0 0 10px' }}>
-            Todo lo que se fue rechazando en Calidad, sin necesidad de emitir el formato formal (eso sigue en Reportes → Formatos → FQD).
-          </p>
           {loadingDevoluciones ? (
             <SkeletonList count={3} lines={1} />
           ) : devolucionesVigentes.length === 0 ? (

@@ -473,14 +473,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         />
         <KpiCard
           icon={IC.leaf}
-          value={recibido > 0 ? `${(recibido / 1000).toFixed(2)} t` : '—'}
+          value={`${(recibido / 1000).toFixed(2)} t`}
           label="Materia prima recibida"
           sub={recibido > 0 ? `${fmt(recibido, 0)} kg · campo → planta` : 'Sin recepciones registradas'}
         />
         {/* FIX #6: muestra merma promedio Y máxima por orden */}
         <KpiCard
           icon={IC.box}
-          value={tamizada > 0 ? `${(tamizada / 1000).toFixed(2)} t` : '—'}
+          value={`${(tamizada / 1000).toFixed(2)} t`}
           label="Panela producida (tamizada)"
           sub={merma != null
             ? `Merma prom.: ${fmt(merma)}%${maxMermaOrder != null ? ` · Máx. orden: ${fmt(maxMermaOrder)}%` : ''}`

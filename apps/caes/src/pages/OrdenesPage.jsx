@@ -1198,9 +1198,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <DateInput value={formOrden.envasado_fecha_fin} onChange={e => setFormOrden({ ...formOrden, envasado_fecha_fin: e.target.value })} />
                 </div>
               </div>
-              <p className="muted small" style={{ margin: '4px 0 0' }}>
-                La fecha de envío ya no se pide aquí -- se toma de la fecha de salida al registrar el contenedor en Embarque.
-              </p>
               <div className="field" style={{ marginTop: 8 }}>
                 <label>Observaciones</label>
                 <textarea
@@ -1398,9 +1395,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <DateInput value={formEditOrden.envasado_fecha_fin} onChange={e => setFormEditOrden({ ...formEditOrden, envasado_fecha_fin: e.target.value })} />
                 </div>
               </div>
-              <p className="muted small" style={{ margin: '4px 0 0' }}>
-                La fecha de envío ya no se pide aquí -- se toma de la fecha de salida al registrar el contenedor en Embarque.
-              </p>
               <div className="field" style={{ marginTop: 8 }}>
                 <label>Observaciones</label>
                 <textarea
