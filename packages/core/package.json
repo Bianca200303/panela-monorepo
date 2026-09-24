@@ -1,0 +1,29 @@
+{
+  "name": "@panela/core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.1",
+    "dom-to-image-more": "^3.10.2",
+    "jspdf": "^4.2.1",
+    "jszip": "^3.10.1",
+    "react": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "react-simple-maps": "^3.0.0",
+    "recharts": "^3.8.1",
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.11"
+  },
+  "exports": {
+    "./index.css": "./src/index.css",
+    "./components/*": "./src/components/*.jsx",
+    "./hooks/useConfirm": "./src/hooks/useConfirm.jsx",
+    "./hooks/*": "./src/hooks/*.js",
+    "./lib/cooperativeContext": "./src/lib/cooperativeContext.jsx",
+    "./lib/formatos/*": "./src/lib/formatos/*.js",
+    "./lib/*": "./src/lib/*.js",
+    "./pages/*": "./src/pages/*.jsx",
+    "./store/*": "./src/store/*.js"
+  }
+}
