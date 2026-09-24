@@ -490,7 +490,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         {/* FIX #2: rendimiento sobre insumo real de homogenizado (no MP de campo) */}
         <KpiCard
           icon={IC.gauge}
-          value={rendimiento != null ? `${fmt(rendimiento)}%` : '—'}
+          value={`${fmt(rendimiento ?? 0)}%`}
           label="Rendimiento en planta"
           sub={rendimiento != null
             ? `Panela tamizada / MP consumida en homogenizado`
@@ -505,7 +505,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         />
         <KpiCard
           icon={IC.droplet}
-          value={avgHumedad != null ? `${fmt(avgHumedad)}%` : '—'}
+          value={`${fmt(avgHumedad ?? 0)}%`}
           label="Humedad promedio"
           sub={totalEvals > 0
             ? outOfSpec > 0
