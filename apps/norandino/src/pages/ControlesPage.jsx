@@ -25,7 +25,7 @@ const TABS = [
   ['plagas', 'Control de Plagas', ControlPlagasPage, 'hys'],
 ]
 
-const GROUP_LABELS = { bpm: 'BPM', hys: 'HYS' }
+const GROUP_LABELS = { bpm: 'BPM', hys: 'Higiene y Saneamiento' }
 
 export default function ControlesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -45,7 +45,7 @@ export default function ControlesPage() {
   return (
     <div>
       <div className="page-header">
-        <h2>Controles SIG</h2>
+        <h2>Controles de planta de envasado</h2>
       </div>
 
       {['bpm', 'hys'].map(group => {

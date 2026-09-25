@@ -428,17 +428,11 @@ export default function ControlPlagasPage() {
         </p>
       </div>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Inspección de Ambientes, Equipo y Personal</h3>
-        <div style={{ display: 'flex', gap: 2, marginBottom: 8 }}>
-          <ToggleButton active={ambientesOk === 'correcto'} onClick={() => setAmbientesOk(toggleValue(ambientesOk, 'correcto'))}>✓</ToggleButton>
-          <ToggleButton active={ambientesOk === 'no_correcto'} tone="bad" onClick={() => setAmbientesOk(toggleValue(ambientesOk, 'no_correcto'))}>✗</ToggleButton>
-        </div>
-        <div className="field" style={{ margin: 0 }}>
-          <label>Observaciones</label>
-          <input type="text" value={ambientesObservaciones} onChange={e => setAmbientesObservaciones(e.target.value)} style={{ width: '100%', fontSize: 12 }} />
-        </div>
-      </div>
+      {/* Sección "Inspección de Ambientes, Equipo y Personal" oculta a
+          pedido del usuario (2026-09-24): no corresponde al papel físico de
+          Norandino. Se dejó el estado/guardado/carga tal cual (columnas
+          ambientes_equipo_personal_ok/observaciones en plant_pest_controls)
+          -- sin este bloque nunca se completan, así que no pasa nada. */}
 
       {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
