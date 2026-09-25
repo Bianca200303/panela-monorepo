@@ -39,6 +39,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'orden_produccion',
     label: 'Orden de Producción',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchOrdenProduccionData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => ordenProduccionPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -47,6 +48,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'registro_trazabilidad',
     label: 'Registro de Trazabilidad',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchRegistroTrazabilidad,
     buildPdfHtml: (order, containerNumber, data, firmantes) => registroTrazabilidadPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -55,6 +57,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'registro_homogenizado_tamizado',
     label: 'Registro de Homogenizado y Tamizado',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchHomogenizadoTamizadoData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => registroHomogenizadoTamizadoPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -63,6 +66,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_envasado',
     label: 'Control del Envasado',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchControlEnvasadoData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => controlEnvasadoPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -71,6 +75,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_calidad_lote',
     label: `Control de Calidad por ${getLoteLabel(COOPERATIVE)}`,
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchControlCalidadLoteData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => controlCalidadLotePdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -79,6 +84,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_higiene_personal_caes',
     label: 'Control de Higiene del Personal',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlHigienePersonalCaesData,
     buildPdfHtml: controlHigienePersonalCaesPdf,
@@ -87,6 +93,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_limpieza_general',
     label: 'Control de Limpieza',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlLimpiezaGeneralData,
     buildPdfHtml: controlLimpiezaGeneralPdf,
@@ -95,6 +102,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_verificacion_limpieza',
     label: 'Verificación del Programa de Limpieza y Sanitización',
+    category: 'hys',
     needsFirmantes: true,
     // fetchData/buildPdfHtml: verificacionLimpieza.js vive en packages/core
     // (compartido, ya no conoce la cooperativa) -- se envuelve para
@@ -109,6 +117,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_cloro_residual_caes',
     label: 'Control de Consumo de Cloro y Verificación de Cloro Residual',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlCloroResidualCaesData,
     buildPdfHtml: controlCloroResidualCaesPdf,
@@ -117,6 +126,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'control_plagas_caes',
     label: 'Control de Roedores e Insectos',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlPlagasCaesData,
     buildPdfHtml: controlPlagasCaesPdf,
@@ -125,6 +135,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'monitoreo_tamizado_caes',
     label: 'Monitoreo y Verificación del Tamizado (PCC)',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchMonitoreoTamizadoCaesData,
     buildPdfHtml: monitoreoTamizadoCaesPdf,
@@ -133,6 +144,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'sellado_envasado_caes',
     label: 'Control de Sellado, Envasado y Empaque de Producto Terminado',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchSelladoEnvasadoCaesData,
     buildPdfHtml: selladoEnvasadoCaesPdf,
@@ -141,6 +153,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'hermeticidad_envases_caes',
     label: 'Control de Hermeticidad de Envases',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchHermeticidadEnvasesCaesData,
     buildPdfHtml: hermeticidadEnvasesCaesPdf,
@@ -149,6 +162,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'calibracion_balanzas_caes',
     label: 'Verificación Interna de Calibración de Balanzas',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchCalibracionBalanzasCaesData,
     buildPdfHtml: calibracionBalanzasCaesPdf,
@@ -157,6 +171,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'temp_humedad_ambientes_caes',
     label: 'Control de Temperatura y Humedad de Ambientes',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchTempHumedadAmbientesCaesData,
     buildPdfHtml: tempHumedadAmbientesCaesPdf,
@@ -165,6 +180,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'lavado_manos_caes',
     label: 'Lavado de Manos en la Operación de Tamizado',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchLavadoManosCaesData,
     buildPdfHtml: lavadoManosCaesPdf,
@@ -173,6 +189,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'preparacion_soluciones_caes',
     label: 'Control de Preparación de Soluciones',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchPreparacionSolucionesCaesData,
     buildPdfHtml: preparacionSolucionesCaesPdf,
@@ -181,6 +198,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'manejo_residuos_caes',
     label: 'Manejo de Residuos',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchManejoResiduosCaesData,
     buildPdfHtml: manejoResiduosCaesPdf,
@@ -189,6 +207,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'orden_salida',
     label: 'Orden de Salida de Productos',
+    category: 'logistica',
     needsFirmantes: false,
     fetchData: (order) => fetchOrdenSalidaQuickDoc(COOPERATIVE, order),
     buildPdfHtml: (order, containerNumber, data, firmantes) => ordenSalidaQuickDocPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -197,6 +216,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'packing_list',
     label: 'Packing List',
+    category: 'logistica',
     needsFirmantes: false,
     fetchData: (order) => fetchPackingListQuickDoc(COOPERATIVE, order),
     buildPdfHtml: (order, containerNumber, data, firmantes) => packingListQuickDocPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -205,6 +225,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'packing_list_nacional_caes',
     label: 'Packing List-Nacional',
+    category: 'logistica',
     needsFirmantes: false,
     fetchData: fetchPackingListNacionalCaesQuickDoc,
     buildPdfHtml: packingListNacionalCaesQuickDocPdf,
@@ -213,6 +234,7 @@ const ALL_QUICK_DOCS = [
   {
     key: 'resumen_trazabilidad',
     label: 'Resumen de Trazabilidad',
+    category: 'logistica',
     needsFirmantes: true,
     needsLoteSelector: true,
     needsTipoSelector: true,

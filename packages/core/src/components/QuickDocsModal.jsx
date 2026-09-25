@@ -6,6 +6,18 @@ import { useCooperative } from '../lib/cooperativeContext'
 import { loteLabel, isOrderNacional } from '../lib/loteHelpers'
 import { getLoteLabel, getLoteLabelPluralLower } from '../lib/labels'
 
+// Agrupación visual de la lista por categoría (category en cada entrada de
+// QUICK_DOCS, ver lib/formatos/index.js de cada app) -- mismo criterio y
+// mismos nombres completos que usa ControlesPage.jsx para sus tabs BPM/HYS,
+// más "logistica" para los documentos que no son ni control de proceso ni
+// de higiene (Orden de Salida, Packing List, Resumen de Trazabilidad).
+const CATEGORY_LABELS = {
+  bpm:       'Buenas Prácticas de Manufactura',
+  hys:       'Higiene y Saneamiento',
+  logistica: 'Logística y Trazabilidad',
+}
+const CATEGORY_ORDER = ['bpm', 'hys', 'logistica']
+
 // Documentos rápidos por orden -- no son "formatos" oficiales (esos viven en
 // la sección Formatos, con código correlativo propio). Se arman al vuelo con
 // datos que ya existen en el sistema, para bajar directo desde la card de la
@@ -197,19 +209,30 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
                   : 'Descargar todos (.zip)'}
               </button>
               {bulkResult && <p className="muted small" style={{ margin: '0 0 10px' }}>{bulkResult}</p>}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {applicableDocs.map(d => (
-                  <button
-                    key={d.key}
-                    className="btn outline"
-                    style={{ textAlign: 'left', justifyContent: 'flex-start' }}
-                    onClick={() => openDoc(d.key)}
-                    disabled={bulkDownloading}
-                  >
-                    {d.label}
-                  </button>
-                ))}
-              </div>
+              {CATEGORY_ORDER.map(cat => {
+                const docsInCat = applicableDocs.filter(d => d.category === cat)
+                if (docsInCat.length === 0) return null
+                return (
+                  <div key={cat} style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 4 }}>
+                      {CATEGORY_LABELS[cat]}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {docsInCat.map(d => (
+                        <button
+                          key={d.key}
+                          className="btn outline"
+                          style={{ textAlign: 'left', justifyContent: 'flex-start' }}
+                          onClick={() => openDoc(d.key)}
+                          disabled={bulkDownloading}
+                        >
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
             </>
           )}
 

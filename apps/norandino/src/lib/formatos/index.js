@@ -33,6 +33,7 @@ export const QUICK_DOCS = [
   {
     key: 'orden_produccion',
     label: 'Orden de Producción',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchOrdenProduccionData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => ordenProduccionPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -41,6 +42,7 @@ export const QUICK_DOCS = [
   {
     key: 'registro_trazabilidad',
     label: 'Registro de Trazabilidad',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchRegistroTrazabilidad,
     buildPdfHtml: (order, containerNumber, data, firmantes) => registroTrazabilidadPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -49,6 +51,7 @@ export const QUICK_DOCS = [
   {
     key: 'registro_homogenizado_tamizado',
     label: 'Registro de Homogenizado y Tamizado',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchHomogenizadoTamizadoData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => registroHomogenizadoTamizadoPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -57,6 +60,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_envasado',
     label: 'Control del Envasado',
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchControlEnvasadoData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => controlEnvasadoPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -65,6 +69,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_calidad_lote',
     label: `Control de Calidad por ${getLoteLabel(COOPERATIVE)}`,
+    category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchControlCalidadLoteData,
     buildPdfHtml: (order, containerNumber, data, firmantes) => controlCalidadLotePdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -73,6 +78,7 @@ export const QUICK_DOCS = [
   {
     key: 'inspeccion_cuerpos_extranos',
     label: 'Inspección de Cuerpos Extraños',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlCuerposExtranosData,
     buildPdfHtml: controlCuerposExtranosPdf,
@@ -81,6 +87,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_salud_higiene_personal',
     label: 'Control de Salud e Higiene del Personal',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlSaludHigienePersonalData,
     buildPdfHtml: controlSaludHigienePersonalPdf,
@@ -89,6 +96,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_limpieza_ambientes',
     label: 'Control de Limpieza y Sanitización de Ambientes',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlLimpiezaAmbientesData,
     buildPdfHtml: controlLimpiezaAmbientesPdf,
@@ -97,6 +105,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_limpieza_equipos',
     label: 'Control de Limpieza y Sanitización de Equipos - Utensilios',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlLimpiezaEquiposData,
     buildPdfHtml: controlLimpiezaEquiposPdf,
@@ -105,6 +114,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_verificacion_limpieza',
     label: 'Verificación del Programa de Limpieza y Sanitización',
+    category: 'hys',
     needsFirmantes: true,
     // fetchData/buildPdfHtml: verificacionLimpieza.js vive en packages/core
     // (compartido, ya no conoce la cooperativa) -- se envuelve para
@@ -119,6 +129,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_cloro_residual',
     label: 'Control de Cloro Residual',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlCloroResidualData,
     buildPdfHtml: controlCloroResidualPdf,
@@ -127,6 +138,7 @@ export const QUICK_DOCS = [
   {
     key: 'control_plagas',
     label: 'Control de Plagas',
+    category: 'hys',
     needsFirmantes: true,
     fetchData: fetchControlPlagasData,
     buildPdfHtml: controlPlagasPdf,
@@ -135,6 +147,7 @@ export const QUICK_DOCS = [
   {
     key: 'orden_salida',
     label: 'Orden de Salida de Productos',
+    category: 'logistica',
     needsFirmantes: false,
     fetchData: (order) => fetchOrdenSalidaQuickDoc(COOPERATIVE, order),
     buildPdfHtml: (order, containerNumber, data, firmantes) => ordenSalidaQuickDocPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -143,6 +156,7 @@ export const QUICK_DOCS = [
   {
     key: 'packing_list',
     label: 'Packing List',
+    category: 'logistica',
     needsFirmantes: false,
     fetchData: (order) => fetchPackingListQuickDoc(COOPERATIVE, order),
     buildPdfHtml: (order, containerNumber, data, firmantes) => packingListQuickDocPdf(COOPERATIVE, order, containerNumber, data, firmantes),
@@ -151,6 +165,7 @@ export const QUICK_DOCS = [
   {
     key: 'resumen_trazabilidad',
     label: 'Resumen de Trazabilidad',
+    category: 'logistica',
     needsFirmantes: true,
     needsLoteSelector: true,
     needsTipoSelector: false,
