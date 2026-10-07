@@ -1,4 +1,3 @@
-import { fetchOrdenProduccionData, ordenProduccionPdf, ordenProduccionExcel } from '@panela/core/lib/formatos/ordenProduccion'
 import { fetchControlCalidadLoteData, controlCalidadLotePdf, controlCalidadLoteExcel } from '@panela/core/lib/formatos/controlCalidadLote'
 import { fetchControlEnvasadoData, controlEnvasadoPdf, controlEnvasadoExcel } from '@panela/core/lib/formatos/controlEnvasado'
 import { getLoteLabel } from '@panela/core/lib/labels'
@@ -31,20 +30,13 @@ import { fetchResumenTrazabilidadData, resumenTrazabilidadPdf, resumenTrazabilid
 // apps/norandino/. El filtro por feature flag que antes decidía cuál de los
 // dos mostrar ya no hace falta -- acá solo existe la variante CAES.
 //
-// Orden = numeración de los formatos físicos de referencia (01.-, 02.-,
+// Orden = numeración de los formatos físicos de referencia (02.-,
 // 05.-, 06.-, 08.-, 09.-, 11.- a 16.-); Orden de Salida y Packing List no
 // tienen número en esa serie (son documentos de logística/embarque), van al
 // final.
+//
+// Sin "Orden de Producción" (01.-): CAES no tiene ese formato físico.
 const ALL_QUICK_DOCS = [
-  {
-    key: 'orden_produccion',
-    label: 'Orden de Producción',
-    category: 'bpm',
-    needsFirmantes: true,
-    fetchData: fetchOrdenProduccionData,
-    buildPdfHtml: (order, containerNumber, data, firmantes) => ordenProduccionPdf(COOPERATIVE, order, containerNumber, data, firmantes),
-    buildExcel: (order, containerNumber, data) => ordenProduccionExcel(COOPERATIVE, order, containerNumber, data),
-  },
   {
     key: 'registro_trazabilidad',
     label: 'Registro de Trazabilidad',
@@ -74,7 +66,7 @@ const ALL_QUICK_DOCS = [
   },
   {
     key: 'control_calidad_lote',
-    label: `Control de Calidad por ${getLoteLabel(COOPERATIVE)}`,
+    label: order => `Control de Calidad por ${getLoteLabel(COOPERATIVE, order)}`,
     category: 'bpm',
     needsFirmantes: true,
     fetchData: fetchControlCalidadLoteData,

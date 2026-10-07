@@ -5,7 +5,7 @@ import { useCooperative } from '../lib/cooperativeContext'
 import { useAuthStore } from '../store/authStore'
 import { loadKgPerSacoTamizado } from '../lib/formConfig'
 import { loteLabel, packagingLabel } from '../lib/loteHelpers'
-import { getLoteLabel, getLoteLabelLower, getLoteLabelPluralLower, getBunqueLabel, getBunqueLabelLower, getBunqueLabelPlural, getBunqueLabelPluralLower } from '../lib/labels'
+import { getLoteLabel, getLoteLabelLower, getVentaTag, getLoteLabelPluralLower, getBunqueLabel, getBunqueLabelLower, getBunqueLabelPlural, getBunqueLabelPluralLower } from '../lib/labels'
 import Icon from '../components/Icon'
 import { useConfirm } from '../hooks/useConfirm'
 import { SkeletonList } from '../components/Skeleton'
@@ -43,12 +43,124 @@ function getAvailableKg(stockItem, editingBunque) {
   return Math.max(0, available)
 }
 
+// Lotes de envasado de órdenes COMPLETADAS a los que este bunque ya
+// repartió: ese reparto queda fijo, y también la materia prima y el
+// resultado del bunque (cambiarlos alteraría la trazabilidad de una orden
+// cerrada). Para corregir hay que reabrir la orden. La base de datos lo
+// refuerza con triggers (20261005120000_bloquear_reparto_orden_completada.sql).
+function lockedLoteIds(bunque) {
+  return new Set((bunque.plant_bunque_batch_allocations ?? [])
+    .filter(a => a.plant_batch?.plant_orders?.status === 'completado')
+    .map(a => a.plant_batch.id))
+}
+
 function allocLoteLabel(alloc) {
   const b = alloc.plant_batch
   if (!b) return '—'
   const ord = b.plant_orders
   const ordLabel = ord?.client_order_number || ord?.order_code
   return `${b.client_batch_number || b.batch_code}${ordLabel ? ` (orden ${ordLabel})` : ''}`
+}
+
+// Avance de los 3 pasos de un bunque (materia prima → tamizado → reparto),
+// en la tarjeta de la lista y arriba del editor. done = verde con ✓,
+// partial = ámbar (ej. reparto incompleto), pending = contorno azul.
+const STEP_STYLES = {
+  done:    { background: 'var(--success)', color: '#fff', border: '1px solid var(--success)' },
+  partial: { background: 'var(--warning)', color: '#fff', border: '1px solid var(--warning)' },
+  pending: { background: '#fff', color: 'var(--primary)', border: '1px solid var(--primary)' },
+}
+function StepProgress({ steps, numbered = false }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      {steps.map((s, i) => (
+        <span key={s.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {i > 0 && <Icon name="chevronRight" size={12} />}
+          <span style={{ ...STEP_STYLES[s.state], borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            {s.state === 'done' && <Icon name="check" size={11} />}
+            {numbered ? `${i + 1}. ${s.label}` : s.label}
+          </span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// Encabezado de cada paso dentro del editor ("1. Materia prima ..."). Se
+// muestra un solo paso abierto a la vez: los demás quedan como una línea
+// con su resumen, y se abren con un clic (es un div, no un button, para
+// que siga funcionando dentro del fieldset deshabilitado de un bunque con
+// orden completada -- ahí se puede mirar cada paso, no editarlo).
+function StepTitle({ n, title, done, open = true, summary, onOpen, disabled = false, children }) {
+  const closedClickable = !open && !disabled
+  return (
+    <div
+      onClick={closedClickable ? onOpen : undefined}
+      role={closedClickable ? 'button' : undefined}
+      style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6,
+        marginBottom: open ? 8 : 0,
+        ...(open ? {} : {
+          padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: '#fff',
+          cursor: closedClickable ? 'pointer' : 'default', opacity: disabled ? 0.6 : 1,
+        }),
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#000', display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{
+          width: 20, height: 20, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, color: '#fff', background: done ? 'var(--success)' : 'var(--primary)', flexShrink: 0,
+        }}>
+          {done ? <Icon name="check" size={11} /> : n}
+        </span>
+        {title}
+        {!open && summary && <span style={{ fontWeight: 400, color: 'var(--muted)' }}>— {summary}</span>}
+      </div>
+      {open ? children : closedClickable && <span style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>Abrir</span>}
+    </div>
+  )
+}
+
+// Ayuda corta detrás de un "i": se ve al pasar el mouse (title) o al
+// tocarla (para celular). Reemplaza los párrafos de explicación largos.
+function Hint({ text }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <span
+        title={text}
+        aria-label={text}
+        onClick={e => { e.stopPropagation(); setShow(s => !s) }}
+        style={{
+          width: 16, height: 16, borderRadius: '50%', border: '1px solid var(--primary)', color: 'var(--primary)',
+          fontSize: 10, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'help', fontStyle: 'italic', fontFamily: 'serif', background: '#fff',
+        }}
+      >i</span>
+      {show && (
+        <span style={{
+          position: 'absolute', top: 20, left: 0, zIndex: 20, width: 260, padding: '8px 10px', borderRadius: 8,
+          background: '#fff', border: '1px solid var(--primary)', boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+          fontSize: 12, fontWeight: 400, color: 'var(--text)', fontStyle: 'normal', textTransform: 'none', lineHeight: 1.4,
+        }}>
+          {text}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// Etiqueta de color con el tipo de venta del lote (CAES) -- el reparto de
+// un bunque puede mezclar lotes de órdenes nacionales y de exportación.
+// Azul = exportación, verde = nacional. No muestra nada en Norandino.
+function VentaTag({ cooperative, order }) {
+  const text = getVentaTag(cooperative, order)
+  if (!text) return null
+  return (
+    <span className={`tag ${order.sale_type === 'nacional' ? 'ok' : 'info'}`} style={{ fontSize: 10, padding: '0 6px', marginLeft: 6 }}>
+      {text}
+    </span>
+  )
 }
 
 // El número de bunque es continuo a nivel de toda la planta pero SÍ
@@ -120,6 +232,12 @@ export default function BunquesPage() {
   const [loteSearch, setLoteSearch] = useState('')
   const [loteResults, setLoteResults] = useState([])
   const [repartoRows, setRepartoRows] = useState([])
+  // Selector Exportación/Nacional del reparto (solo cooperativas que
+  // distinguen, CAES): filtra la búsqueda de lotes y define los títulos.
+  // Arranca en el tipo de la orden de contexto si se llegó desde una.
+  const porVenta = !!COOPERATIVE?.features?.loteLabelPorVenta
+  const [ventaFiltro, setVentaFiltro] = useState('exportacion')
+  const repartoVenta = porVenta ? { sale_type: ventaFiltro } : undefined
   const emptyResultForm = { tamizada_kg: '', reproceso_kg: '0', descarte_kg: '', tamizada_sacos: '', reproceso_sacos: '', descarte_sacos: '' }
   const [resultForm, setResultForm] = useState(emptyResultForm)
   const [error, setError] = useState('')
@@ -128,6 +246,18 @@ export default function BunquesPage() {
   const [editingNumberValue, setEditingNumberValue] = useState('')
   const [kgPerSaco, setKgPerSaco] = useState(50)
   const [restoredDraft, setRestoredDraft] = useState(false)
+  const [exitPrompt, setExitPrompt] = useState(null) // bunque con cambios sin guardar que se intenta cerrar
+  const [openStep, setOpenStep] = useState(1) // paso abierto en el editor (los demás quedan plegados)
+  // "Ingresar en sacos": un solo interruptor cambia todos los campos de kg
+  // a sacos (el kg se calcula solo y es lo que se guarda). Se recuerda en
+  // este navegador -- es una preferencia de quien carga, no un dato.
+  const [modoSacos, setModoSacosState] = useState(() => {
+    try { return localStorage.getItem('bunques_modo_sacos') === '1' } catch { return false }
+  })
+  const setModoSacos = (v) => {
+    setModoSacosState(v)
+    try { localStorage.setItem('bunques_modo_sacos', v ? '1' : '0') } catch { /* sin storage: solo dura la sesión */ }
+  }
   const { confirm, dialog: confirmDialog } = useConfirm()
 
   // Punto de comparación para saber si hay cambios sin guardar: lo que
@@ -142,7 +272,9 @@ export default function BunquesPage() {
     setResultForm(f => ({
       ...f,
       [sacosField]: sacosValue,
-      [kgField]: !isNaN(sacos) && sacos >= 0 ? String(Math.round(sacos * kgPerSaco * 100) / 100) : f[kgField],
+      // Vaciar los sacos vacía también el kg: en modo sacos el kg no se ve
+      // editable, no puede quedar un valor viejo escondido.
+      [kgField]: sacosValue === '' ? '' : !isNaN(sacos) && sacos >= 0 ? String(Math.round(sacos * kgPerSaco * 100) / 100) : f[kgField],
     }))
   }
 
@@ -166,7 +298,7 @@ export default function BunquesPage() {
         plant_bunque_batch_allocations (
           id, kg,
           plant_batch:plant_production_batches ( id, batch_code, client_batch_number, brand, packaging_type,
-            plant_orders ( order_code, client_order_number ) )
+            plant_orders ( order_code, client_order_number, sale_type, status ) )
         )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
@@ -233,10 +365,13 @@ export default function BunquesPage() {
     if (!contextLoteId) { setContextLote(null); return }
     supabase
       .from('plant_production_batches')
-      .select('id, batch_code, client_batch_number, brand, packaging_type, plant_orders ( order_code, client_order_number )')
+      .select('id, batch_code, client_batch_number, brand, packaging_type, plant_orders ( order_code, client_order_number, sale_type, status )')
       .eq('id', contextLoteId)
       .maybeSingle()
-      .then(({ data }) => setContextLote(data ?? null))
+      .then(({ data }) => {
+        setContextLote(data ?? null)
+        if (data?.plant_orders?.sale_type) setVentaFiltro(data.plant_orders.sale_type)
+      })
   }, [contextLoteId])
 
   // Búsqueda de lotes de envasado para repartir (por N° de lote), con
@@ -245,24 +380,27 @@ export default function BunquesPage() {
   // "si no atinamos [con el texto] no hay forma fácil de buscar") -- se
   // muestran de entrada los lotes de órdenes en_proceso (el caso más común,
   // igual criterio que usa Órdenes) para poder elegir sin tipear nada;
-  // escribir 2+ caracteres cambia a búsqueda por N° en CUALQUIER orden
-  // (incluidas completadas, para poder corregir un reparto viejo).
+  // escribir 2+ caracteres cambia a búsqueda por N° en cualquier orden NO
+  // completada -- el reparto de una orden completada está bloqueado (ver
+  // 20261005120000_bloquear_reparto_orden_completada.sql), para corregirlo
+  // hay que reabrir la orden.
   useEffect(() => {
     const q = loteSearch.trim()
     let active = true
     const t = setTimeout(async () => {
       let query = supabase
         .from('plant_production_batches')
-        .select('id, batch_code, client_batch_number, brand, packaging_type, plant_orders!inner ( order_code, client_order_number, status )')
+        .select('id, batch_code, client_batch_number, brand, packaging_type, plant_orders!inner ( order_code, client_order_number, status, sale_type )')
         .eq('cooperative_id', COOPERATIVE.id)
       query = q.length >= 2
-        ? query.or(`batch_code.ilike.%${q}%,client_batch_number.ilike.%${q}%`)
+        ? query.or(`batch_code.ilike.%${q}%,client_batch_number.ilike.%${q}%`).neq('plant_orders.status', 'completado')
         : query.eq('plant_orders.status', 'en_proceso')
+      if (porVenta) query = query.eq('plant_orders.sale_type', ventaFiltro)
       const { data } = await query.order('created_at', { ascending: false }).limit(15)
       if (active) setLoteResults(data ?? [])
     }, q.length >= 2 ? 300 : 0)
     return () => { active = false; clearTimeout(t) }
-  }, [loteSearch])
+  }, [loteSearch, ventaFiltro, porVenta])
 
   // Guarda el borrador en cada cambio mientras hay un bunque abierto.
   useEffect(() => {
@@ -287,7 +425,7 @@ export default function BunquesPage() {
     const existing = bunque.plant_homogenization_inputs ?? []
     const existingRepartos = (bunque.plant_bunque_batch_allocations ?? [])
       .filter(a => a.plant_batch)
-      .map(a => ({ plant_batch_id: a.plant_batch.id, kg: String(a.kg), label: allocLoteLabel(a) }))
+      .map(a => ({ plant_batch_id: a.plant_batch.id, kg: String(a.kg), label: allocLoteLabel(a), sale_type: a.plant_batch.plant_orders?.sale_type }))
     const savedState = {
       editingInputs: existing.map(h => ({ source_exit_item_id: h.source_exit_item_id, quantity_kg: String(h.quantity_kg) })),
       resultForm: {
@@ -302,27 +440,54 @@ export default function BunquesPage() {
     }
     savedSnapshotRef.current = JSON.stringify(savedState)
 
-    const draft = loadBunqueDraft(bunque.id)
+    // Un borrador local nunca puede pisar lo bloqueado por una orden
+    // completada: materia prima, resultado y filas de reparto cerradas
+    // vuelven siempre a lo guardado.
+    const locked = lockedLoteIds(bunque)
+    let draft = loadBunqueDraft(bunque.id)
+    if (draft && locked.size > 0) {
+      draft = {
+        editingInputs: savedState.editingInputs,
+        resultForm: savedState.resultForm,
+        repartoRows: [
+          ...existingRepartos.filter(r => locked.has(r.plant_batch_id)),
+          ...(draft.repartoRows ?? []).filter(r => !locked.has(r.plant_batch_id)),
+        ],
+      }
+    }
     const initial = draft ?? savedState
     setEditingInputs(initial.editingInputs)
     setResultForm(initial.resultForm)
     setRepartoRows(initial.repartoRows ?? [])
+    // El selector Exportación/Nacional arranca en el tipo de lo que este
+    // bunque ya tiene repartido, para que el título coincida con la tabla.
+    const tipoRepartido = (initial.repartoRows ?? []).find(r => r.sale_type)?.sale_type
+    if (tipoRepartido) setVentaFiltro(tipoRepartido)
     setRestoredDraft(draft != null && JSON.stringify(draft) !== savedSnapshotRef.current)
+    // Abre directamente el primer paso que falta completar.
+    const hasInputsSaved = (initial.editingInputs ?? []).some(h => parseFloat(h.quantity_kg) > 0)
+    const hasResultSaved = initial.resultForm?.tamizada_kg !== '' && initial.resultForm?.descarte_kg !== ''
+    setOpenStep(!hasInputsSaved ? 1 : !hasResultSaved ? 2 : 3)
     setExpandedBunqueId(bunque.id)
   }
 
-  const attemptCollapseBunque = async (bunque) => {
-    if (isDirty) {
-      const ok = await confirm({
-        title: 'Cambios sin guardar',
-        message: `Este ${BUNQUE_LABEL_LOWER} tiene cambios sin guardar. ¿Desea guardarlos antes de salir?`,
-        confirmText: 'Guardar',
-      })
-      if (!ok) return
-      await handleSaveBunque(bunque)
-      return
-    }
+  // Al cerrar con cambios sin guardar se ofrecen 3 salidas (antes solo
+  // había "Guardar" o quedarse, sin forma de descartar).
+  const attemptCollapseBunque = (bunque) => {
+    if (isDirty) { setExitPrompt(bunque); return }
     setExpandedBunqueId(null)
+  }
+
+  const discardAndCollapse = (bunque) => {
+    clearBunqueDraft(bunque.id)
+    setExitPrompt(null)
+    setError('')
+    setExpandedBunqueId(null)
+  }
+
+  const saveAndCollapse = async (bunque) => {
+    setExitPrompt(null)
+    await handleSaveBunque(bunque)
   }
 
   const handleCreateBunque = async () => {
@@ -351,6 +516,7 @@ export default function BunquesPage() {
       setGrSearch('')
       setResultForm(emptyResultForm)
       setRepartoRows([])
+      setOpenStep(1)
       setExpandedBunqueId(newBunque.id)
     } catch (err) {
       setError(err.message)
@@ -400,7 +566,7 @@ export default function BunquesPage() {
     setError('')
     const ok = await confirm({
       title: `Eliminar ${BUNQUE_LABEL_LOWER}`,
-      message: `¿Eliminar el ${BUNQUE_LABEL_LOWER} ${bunque.bunque_number}? Se van a borrar también los insumos que tenga asignados.`,
+      message: `¿Eliminar el ${BUNQUE_LABEL_LOWER} ${bunque.bunque_number}? Se van a borrar también las guías de materia prima que tenga asignadas.`,
       confirmText: 'Eliminar',
       danger: true,
     })
@@ -430,6 +596,7 @@ export default function BunquesPage() {
       setEditingInputs([...editingInputs, {
         source_exit_item_id: exitItemId,
         quantity_kg: avail > 0 ? avail.toFixed(2) : '',
+        sacos: avail > 0 ? String(Math.round((avail / kgPerSaco) * 100) / 100) : '',
       }])
     }
   }
@@ -448,7 +615,9 @@ export default function BunquesPage() {
     setEditingInputs(editingInputs.map(h => {
       if (h.source_exit_item_id !== exitItemId) return h
       let kg = h.quantity_kg
-      if (!isNaN(sacos) && sacos >= 0) {
+      if (sacosValue === '') {
+        kg = ''
+      } else if (!isNaN(sacos) && sacos >= 0) {
         kg = String(Math.min(Math.round(sacos * kgPerSaco * 100) / 100, avail))
       }
       return { ...h, sacos: sacosValue, quantity_kg: kg }
@@ -457,9 +626,10 @@ export default function BunquesPage() {
 
   const addRepartoLote = (pb) => {
     if (repartoRows.some(r => r.plant_batch_id === pb.id)) return
+    if (pb.plant_orders?.status === 'completado') return
     const ord = pb.plant_orders
     const label = `${loteLabel(pb)} — ${pb.brand ?? ''}${ord ? ` (orden ${ord.client_order_number || ord.order_code})` : ''}`
-    setRepartoRows([...repartoRows, { plant_batch_id: pb.id, kg: '', label }])
+    setRepartoRows([...repartoRows, { plant_batch_id: pb.id, kg: '', label, sale_type: ord?.sale_type }])
     setLoteSearch('')
     setLoteResults([])
   }
@@ -479,7 +649,7 @@ export default function BunquesPage() {
     setError('')
     const filtered = editingInputs.filter(h => parseFloat(h.quantity_kg) > 0)
     if (filtered.length === 0) {
-      setError('Selecciona al menos un lote de origen con kg > 0')
+      setError('Paso 1: marque al menos una guía de materia prima y escriba cuántos kg usar.')
       return false
     }
     for (const h of filtered) {
@@ -488,7 +658,7 @@ export default function BunquesPage() {
       const qty = parseFloat(h.quantity_kg)
       if (qty > avail + 0.01) {
         const code = stockItem?.comprobante_acopio ?? stockItem?.guia_remision ?? h.source_exit_item_id
-        setError(`El lote de origen ${code} no tiene suficiente cantidad disponible — disponible: ${avail.toFixed(2)} kg, solicitado: ${qty.toFixed(2)} kg`)
+        setError(`La guía ${code} no tiene suficiente cantidad disponible — disponible: ${avail.toFixed(2)} kg, solicitado: ${qty.toFixed(2)} kg`)
         return false
       }
     }
@@ -505,12 +675,12 @@ export default function BunquesPage() {
       if (isNaN(rep) || rep < 0) { setError('El valor de reproceso no puede ser negativo'); return false }
       if (isNaN(des) || des < 0) { setError('El valor de descarte no puede ser negativo'); return false }
       if (tam > total + 0.01) {
-        setError(`La panela tamizada (${tam.toFixed(2)} kg) no puede superar el total de insumos de este ${BUNQUE_LABEL_LOWER} (${total.toFixed(2)} kg). No es físicamente posible producir más de lo que se mezcló.`)
+        setError(`La panela tamizada (${tam.toFixed(2)} kg) no puede superar el total de materia prima de este ${BUNQUE_LABEL_LOWER} (${total.toFixed(2)} kg). No es físicamente posible producir más de lo que se mezcló.`)
         return false
       }
       const merma = total - tam - rep - des
       if (merma < -0.01) {
-        setError(`La suma tamizada + reproceso + descarte (${(tam + rep + des).toFixed(2)} kg) supera el total de insumos de este ${BUNQUE_LABEL_LOWER} (${total.toFixed(2)} kg). Revise los valores ingresados.`)
+        setError(`La suma tamizada + reproceso + descarte (${(tam + rep + des).toFixed(2)} kg) supera el total de materia prima de este ${BUNQUE_LABEL_LOWER} (${total.toFixed(2)} kg). Revise los valores ingresados.`)
         return false
       }
       bunqueUpdate = {
@@ -537,32 +707,44 @@ export default function BunquesPage() {
       return false
     }
 
+    // Con reparto a una orden completada, la materia prima, el resultado y
+    // esas filas de reparto quedan fijos: no se reescriben (la base de
+    // datos además lo rechazaría). Solo se guarda el reparto abierto.
+    const locked = lockedLoteIds(bunque)
+    const repartoAbierto = repartoFiltered.filter(r => !locked.has(r.plant_batch_id))
+
     setSaving(true)
     try {
-      await supabase.from('plant_homogenization_inputs').delete().eq('bunque_id', bunque.id)
-      const { error: insErr } = await supabase
-        .from('plant_homogenization_inputs')
-        .insert(filtered.map(h => ({
-          bunque_id: bunque.id,
-          source_exit_item_id: h.source_exit_item_id,
-          quantity_kg: parseFloat(h.quantity_kg),
-          cooperative_id: COOPERATIVE.id,
-        })))
-      if (insErr) throw new Error(insErr.message)
+      if (locked.size === 0) {
+        const { error: delInErr } = await supabase.from('plant_homogenization_inputs').delete().eq('bunque_id', bunque.id)
+        if (delInErr) throw new Error(delInErr.message)
+        const { error: insErr } = await supabase
+          .from('plant_homogenization_inputs')
+          .insert(filtered.map(h => ({
+            bunque_id: bunque.id,
+            source_exit_item_id: h.source_exit_item_id,
+            quantity_kg: parseFloat(h.quantity_kg),
+            cooperative_id: COOPERATIVE.id,
+          })))
+        if (insErr) throw new Error(insErr.message)
 
-      if (bunqueUpdate) {
-        const { error: updErr } = await supabase
-          .from('plant_batch_bunques')
-          .update(bunqueUpdate)
-          .eq('id', bunque.id)
-        if (updErr) throw new Error(updErr.message)
+        if (bunqueUpdate) {
+          const { error: updErr } = await supabase
+            .from('plant_batch_bunques')
+            .update(bunqueUpdate)
+            .eq('id', bunque.id)
+          if (updErr) throw new Error(updErr.message)
+        }
       }
 
-      await supabase.from('plant_bunque_batch_allocations').delete().eq('bunque_id', bunque.id)
-      if (repartoFiltered.length > 0) {
+      let delRep = supabase.from('plant_bunque_batch_allocations').delete().eq('bunque_id', bunque.id)
+      if (locked.size > 0) delRep = delRep.not('plant_batch_id', 'in', `(${[...locked].join(',')})`)
+      const { error: delRepErr } = await delRep
+      if (delRepErr) throw new Error(delRepErr.message)
+      if (repartoAbierto.length > 0) {
         const { error: repErr } = await supabase
           .from('plant_bunque_batch_allocations')
-          .insert(repartoFiltered.map(r => ({
+          .insert(repartoAbierto.map(r => ({
             bunque_id: bunque.id,
             plant_batch_id: r.plant_batch_id,
             kg: parseFloat(r.kg),
@@ -621,9 +803,6 @@ export default function BunquesPage() {
       <div className="page-header">
         <h2>Gestión de {BUNQUE_LABEL_PLURAL}</h2>
       </div>
-      <p className="muted small" style={{ margin: '0 0 16px' }}>
-        El {BUNQUE_LABEL_LOWER} es un recurso de planta, independiente de cualquier {LOTE_LABEL_LOWER}: se cargan sus insumos (lotes de campo) y su resultado de tamizado, y su resultado se reparte a uno o varios {LOTE_LABEL_PLURAL_LOWER} por kg — de cualquier orden.
-      </p>
 
       {contextLote && (
         <div style={{
@@ -635,16 +814,10 @@ export default function BunquesPage() {
           <span style={{ fontSize: 13 }}>
             Repartiendo para: <strong>{loteLabel(contextLote)}</strong> — {contextLote.brand} · {packagingLabel(contextLote)}
             {contextLote.plant_orders ? ` · orden ${contextLote.plant_orders.client_order_number || contextLote.plant_orders.order_code}` : ''}
+            <VentaTag cooperative={COOPERATIVE} order={contextLote.plant_orders} />
           </span>
         </div>
       )}
-
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
-          <input type="checkbox" checked={soloConDisponible} onChange={e => setSoloConDisponible(e.target.checked)} />
-          Mostrar solo {BUNQUE_LABEL_PLURAL_LOWER} con kg sin repartir
-        </label>
-      </div>
 
       {activeCampaign === null && (
         <p className="muted small" style={{ margin: '0 0 12px' }}>
@@ -652,9 +825,12 @@ export default function BunquesPage() {
         </p>
       )}
 
-      <div className="card" style={{ marginBottom: 16 }}>
+      {/* Crear y buscar van separados: son dos acciones distintas y antes,
+          en la misma fila y con el mismo peso, se confundían. */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Crear nuevo {BUNQUE_LABEL_LOWER}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div className="field" style={{ margin: 0, flex: 1, minWidth: 160 }}>
+          <div className="field" style={{ margin: 0, flex: 1, minWidth: 160, maxWidth: 360 }}>
             <label>N° de {BUNQUE_LABEL_LOWER}{activeCampaign ? <span className="muted small"> — campaña {activeCampaign.year}</span> : null}</label>
             <input
               type="text"
@@ -662,15 +838,17 @@ export default function BunquesPage() {
               value={newBunqueNumber}
               style={isDuplicateNumber ? { borderColor: 'var(--warning)', background: '#fffbeb' } : undefined}
               onChange={e => setNewBunqueNumber(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && newBunqueNumber.trim() && !saving) handleCreateBunque() }}
             />
           </div>
-          <button className="btn primary" onClick={handleCreateBunque} disabled={saving}>
-            + Nuevo {BUNQUE_LABEL_LOWER}
+          <button
+            className="btn primary"
+            onClick={handleCreateBunque}
+            disabled={saving || !newBunqueNumber.trim()}
+            title={!newBunqueNumber.trim() ? `Escriba primero el N° de ${BUNQUE_LABEL_LOWER}` : undefined}
+          >
+            + Crear {BUNQUE_LABEL_LOWER}
           </button>
-          <div className="field" style={{ margin: 0, flex: 1, minWidth: 160 }}>
-            <label>Buscar {BUNQUE_LABEL_LOWER} N°</label>
-            <input type="text" placeholder="Filtrar por número..." value={bunqueFilter} onChange={e => setBunqueFilter(e.target.value)} />
-          </div>
         </div>
         {isDuplicateNumber && (
           <p style={{ color: 'var(--warning)', fontSize: 12, margin: '8px 0 0' }}>
@@ -678,6 +856,17 @@ export default function BunquesPage() {
           </p>
         )}
         {expandedBunqueId == null && error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div className="field" style={{ margin: 0, flex: 1, minWidth: 160, maxWidth: 260 }}>
+          <label>Buscar {BUNQUE_LABEL_LOWER} por N°</label>
+          <input type="text" placeholder="Filtrar por número..." value={bunqueFilter} onChange={e => setBunqueFilter(e.target.value)} />
+        </div>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', paddingBottom: 8 }}>
+          <input type="checkbox" checked={soloConDisponible} onChange={e => setSoloConDisponible(e.target.checked)} />
+          Mostrar solo {BUNQUE_LABEL_PLURAL_LOWER} con kg sin repartir
+        </label>
       </div>
 
       {visibleBunques.length === 0 && (
@@ -720,51 +909,54 @@ export default function BunquesPage() {
                   <button className="btn small outline" disabled={saving} onClick={cancelEditNumber}>Cancelar</button>
                 </div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700 }}>{BUNQUE_LABEL} {bunque.bunque_number}</span>
-                  <button className="btn small primary" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => startEditNumber(bunque)}>Editar número</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 700 }}>{BUNQUE_LABEL} {bunque.bunque_number}</span>
+                  <button className="btn small outline" style={{ fontSize: 11, padding: '1px 8px' }} onClick={() => startEditNumber(bunque)}>Cambiar N°</button>
+                  {/* Resumen de kg en una sola línea -- el detalle (reparto
+                      por lote, reproceso/descarte) se ve al abrir el bunque. */}
+                  <span className="muted small">
+                    {!hasInputs
+                      ? 'sin materia prima'
+                      : !hasResult
+                        ? `${savedInputKg.toFixed(2)} kg de materia prima`
+                        : <>
+                            {savedInputKg.toFixed(2)} kg → {Number(bunque.tamizada_kg).toFixed(2)} kg tamizada ·{' '}
+                            <span style={{ color: savedInputKg > 0 && (Number(bunque.merma_kg) / savedInputKg * 100) > 5 ? 'var(--warning)' : undefined }}>
+                              merma {savedInputKg > 0 ? (Number(bunque.merma_kg) / savedInputKg * 100).toFixed(1) : '0'}%
+                            </span>
+                          </>}
+                  </span>
                 </div>
               )}
-              <span className={`tag ${hasResult ? 'ok' : hasInputs ? 'info' : 'warn'}`} style={{ fontSize: 11 }}>
-                {hasResult ? 'Completo' : hasInputs ? 'Con insumos, falta resultado' : 'Sin insumos'}
-              </span>
+              <StepProgress steps={[
+                { label: 'Materia prima', state: hasInputs ? 'done' : 'pending' },
+                { label: 'Tamizado', state: hasResult ? 'done' : 'pending' },
+                { label: 'Reparto', state: !hasResult ? 'pending' : sinRepartir > 0.01 ? 'partial' : 'done' },
+              ]} />
             </div>
 
-            {hasInputs && (
-              <div className="meta" style={{ fontSize: 12, marginTop: 4 }}>
-                Insumos: {savedInputKg.toFixed(2)} kg · {(bunque.plant_homogenization_inputs ?? []).length} fuente(s)
-              </div>
-            )}
-            {hasResult && (
-              <div className="meta" style={{ fontSize: 12 }}>
-                Tamizada {bunque.tamizada_kg} kg · Reproceso {bunque.reproceso_kg ?? 0} kg · Descarte {bunque.descarte_kg} kg · Merma {bunque.merma_kg} kg
-                {savedInputKg > 0 && (
-                  <span style={{ marginLeft: 6, color: (Number(bunque.merma_kg) / savedInputKg * 100) > 5 ? 'var(--warning)' : 'inherit' }}>
-                    ({(Number(bunque.merma_kg) / savedInputKg * 100).toFixed(2)}% merma)
-                  </span>
-                )}
-              </div>
-            )}
-            {hasResult && (
-              <div className="meta" style={{ fontSize: 12 }}>
-                {allocs.length > 0
-                  ? <>Repartido a: {allocs.map(a => `${allocLoteLabel(a)} (${Number(a.kg).toFixed(2)} kg)`).join(', ')}</>
-                  : <span style={{ color: 'var(--warning)' }}>Todavía sin repartir a ningún {LOTE_LABEL_LOWER}</span>}
-                {sinRepartir > 0.01 && <span style={{ color: 'var(--warning)' }}> · {sinRepartir.toFixed(2)} kg sin repartir</span>}
-              </div>
-            )}
-
-            <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+            <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
               <button
-                className="btn small primary"
+                className={`btn small ${isExpanded ? 'outline' : 'primary'}`}
                 onClick={() => isExpanded ? attemptCollapseBunque(bunque) : openBunqueEditor(bunque)}
               >
-                Editar {BUNQUE_LABEL_LOWER}
+                {isExpanded
+                  ? 'Cerrar'
+                  : !hasInputs ? 'Empezar: elegir materia prima'
+                  : !hasResult ? 'Continuar: registrar tamizado'
+                  : sinRepartir > 0.01 ? 'Continuar: repartir'
+                  : 'Ver / editar'}
               </button>
               {!hasResult && (
                 <button className="btn small danger primary" disabled={saving} onClick={() => handleDeleteBunque(bunque)}>
                   Eliminar {BUNQUE_LABEL_LOWER}
                 </button>
+              )}
+              {hasResult && sinRepartir > 0.01 && (
+                <span style={{ color: 'var(--warning)', fontSize: 12, fontWeight: 600 }}>{sinRepartir.toFixed(2)} kg sin repartir</span>
+              )}
+              {allocs.some(a => a.plant_batch?.plant_orders?.status === 'completado') && (
+                <span style={{ color: 'var(--primary)', fontSize: 12 }}>Repartido a orden completada</span>
               )}
             </div>
 
@@ -791,26 +983,87 @@ export default function BunquesPage() {
               const repartoExcede = hasVals && repartoTotalLive > tam + 0.01
               const visibleLoteResults = loteResults.filter(pb => !repartoRows.some(r => r.plant_batch_id === pb.id))
 
+              // Lo que impediría guardar, calculado en vivo con las MISMAS
+              // reglas de handleSaveBunque (que sigue validando igual, como
+              // respaldo) -- así el botón Guardar se desactiva y se explica
+              // antes, en vez de mostrar el error recién al hacer clic.
+              const inputsConKg = editingInputs.filter(h => parseFloat(h.quantity_kg) > 0)
+              const inputsSinKg = editingInputs.filter(h => !(parseFloat(h.quantity_kg) > 0))
+              const inputsExcedidos = editingInputs.filter(h => {
+                const s = stockItems.find(x => x.exit_item_id === h.source_exit_item_id)
+                return parseFloat(h.quantity_kg) > (s ? getAvailableKg(s, bunque) : 0) + 0.01
+              })
+              const tamVacio = resultForm.tamizada_kg === ''
+              const desVacio = resultForm.descarte_kg === ''
+              const resultadoIncompleto = tamVacio !== desVacio
+              const hayNegativo = ['tamizada_kg', 'reproceso_kg', 'descarte_kg'].some(k => parseFloat(resultForm[k]) < 0)
+              const repartoConKg = repartoRows.filter(r => parseFloat(r.kg) > 0)
+              const repartoSinKg = repartoRows.filter(r => !(parseFloat(r.kg) > 0))
+              const faltantes = [
+                inputsConKg.length === 0 && 'Paso 1: marque al menos una guía de materia prima y escriba cuántos kg usar.',
+                inputsExcedidos.length > 0 && 'Paso 1: hay guías con más kg que los disponibles (en rojo).',
+                resultadoIncompleto && tamVacio && 'Paso 2: falta "Panela tamizada" (o borre también Descarte si todavía no hay resultado).',
+                resultadoIncompleto && desVacio && 'Paso 2: falta "Descarte" — si no hubo descarte, escriba 0.',
+                hayNegativo && 'Paso 2: hay valores negativos.',
+                tamExcede && 'Paso 2: la panela tamizada supera el total de materia prima.',
+                sumaExcede && !tamExcede && 'Paso 2: tamizada + reproceso + descarte supera el total de materia prima.',
+                !hasVals && repartoConKg.length > 0 && 'Paso 3: para repartir, primero complete el paso 2.',
+                repartoExcede && 'Paso 3: lo repartido supera la panela tamizada.',
+              ].filter(Boolean)
+              const avisos = [
+                inputsSinKg.length > 0 && `${inputsSinKg.length} guía(s) marcada(s) sin kg — no se van a guardar.`,
+                hasVals && repartoSinKg.length > 0 && `${repartoSinKg.length} ${getLoteLabelLower(COOPERATIVE)}(s) del reparto sin kg — no se van a guardar.`,
+              ].filter(Boolean)
+              const paso1Ok = inputsConKg.length > 0 && inputsExcedidos.length === 0
+              const paso2Ok = hasVals && balanceOk && !hayNegativo
+              const paso3State = !paso2Ok ? 'pending' : repartoTotalLive >= tam - 0.01 && tam > 0 ? 'done' : repartoTotalLive > 0 ? 'partial' : 'pending'
+              const locked = lockedLoteIds(bunque)
+              const bloqueadoPorOrden = locked.size > 0
+
               return (
                 <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                  {restoredDraft && (
-                    <div style={{ background: '#fffbeb', border: '1px solid var(--warning)', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 12, color: '#b45309' }}>
-                      Se restauró un borrador sin guardar de este {BUNQUE_LABEL_LOWER}. Revise los datos y guarde con "Guardar {BUNQUE_LABEL_LOWER}" para confirmarlos.
+                  {bloqueadoPorOrden && (
+                    <div style={{ background: 'rgba(15,76,92,0.08)', border: '1px solid var(--primary)', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 13, color: 'var(--primary)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                      <Icon name="alertTriangle" size={14} />
+                      <span>
+                        Repartido a una <strong>orden completada</strong>: solo puede repartir los kg libres. Para corregir lo demás, reabra la orden.
+                      </span>
                     </div>
                   )}
-                  {/* ── Insumos ── */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: '#000' }}>
-                      Insumos de este {BUNQUE_LABEL_LOWER}
+                  {restoredDraft && (
+                    <div style={{ background: '#fffbeb', border: '1px solid var(--warning)', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 12, color: '#b45309' }}>
+                      Se recuperó un borrador sin guardar. Revíselo y guarde.
                     </div>
+                  )}
+                  {!bloqueadoPorOrden && openStep !== 3 && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={modoSacos} onChange={e => setModoSacos(e.target.checked)} />
+                        Ingresar en sacos ({kgPerSaco} kg c/u)
+                        <Hint text="El kg se calcula solo y es lo que se guarda. Si la balanza da otro número, desactive esta opción y corrija el kg." />
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Pasos 1 y 2 en solo lectura si hay reparto a una orden
+                      completada (fieldset disabled desactiva todos los
+                      campos de adentro de una vez). */}
+                  <fieldset disabled={bloqueadoPorOrden} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+                  {/* ── Paso 1: Materia prima ── */}
+                  <StepTitle
+                    n={1} title="Materia prima" done={paso1Ok}
+                    open={openStep === 1} onOpen={() => setOpenStep(1)}
+                    summary={inputsConKg.length > 0 ? `${liveTotal.toFixed(2)} kg de ${inputsConKg.length} guía(s)` : 'sin elegir todavía'}
+                  >
                     <div style={{
                       fontSize: 13, fontWeight: 700, color: '#fff', background: 'var(--primary)',
                       borderRadius: 6, padding: '4px 10px',
                     }}>
-                      Total seleccionado: {liveTotal.toFixed(2)} kg
-                      {editingInputs.length > 0 && <span style={{ fontWeight: 400 }}> ({editingInputs.length} lote{editingInputs.length === 1 ? '' : 's'})</span>}
+                      Total: {liveTotal.toFixed(2)} kg
+                      {editingInputs.length > 0 && <span style={{ fontWeight: 400 }}> ({editingInputs.length} guía{editingInputs.length === 1 ? '' : 's'})</span>}
                     </div>
-                  </div>
+                  </StepTitle>
+                  {openStep === 1 && (<>
                   <div className="field" style={{ margin: '0 0 10px' }}>
                     <label>Buscar por guía de remisión</label>
                     <input
@@ -829,21 +1082,19 @@ export default function BunquesPage() {
                       <thead>
                         <tr>
                           <th>Usar</th>
-                          <th>Guía de remisión</th>
-                          <th>Comprobante acopio</th>
-                          <th>Módulo</th>
+                          <th style={{ whiteSpace: 'nowrap' }}>
+                            Guía <Hint text="Pase el mouse sobre una guía para ver su comprobante de acopio, módulo y kg recibidos." />
+                          </th>
                           <th>Productor</th>
                           <th>Tipo</th>
-                          <th>Recibido (kg)</th>
                           <th>Disponible (kg)</th>
-                          <th>Kg a usar</th>
-                          <th>o sacos</th>
+                          <th>{modoSacos ? 'Sacos a usar' : 'Kg a usar'}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleStockItems.length === 0 && (
-                          <tr><td colSpan={10} className="muted small" style={{ textAlign: 'center', padding: '10px 0' }}>
-                            {grSearch.trim() ? 'Ninguna guía coincide con la búsqueda.' : 'No quedan lotes con disponible para usar.'}
+                          <tr><td colSpan={6} className="muted small" style={{ textAlign: 'center', padding: '10px 0' }}>
+                            {grSearch.trim() ? 'Ninguna guía coincide con la búsqueda.' : 'No quedan guías con kg disponibles para usar.'}
                           </td></tr>
                         )}
                         {visibleStockItems.map(src => {
@@ -860,24 +1111,17 @@ export default function BunquesPage() {
                                   onChange={() => toggleSource(exitItemId, avail)}
                                 />
                               </td>
-                              <td>
+                              <td title={`Comprobante de acopio: ${src.comprobante_acopio ?? '—'} · Módulo: ${src.module_name ?? '—'} · Recibido: ${Number(src.quantity_kg_received ?? 0).toFixed(2)} kg`} style={{ cursor: 'help' }}>
                                 <div style={{ fontFamily: 'monospace', fontWeight: 700, color: 'var(--primary-600)' }}>
                                   {src.guia_remision ?? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>sin guía</span>}
                                 </div>
                               </td>
-                              <td>
-                                <div style={{ fontFamily: 'monospace', fontWeight: 700, color: 'var(--success)' }}>
-                                  {src.comprobante_acopio ?? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>sin comprobante</span>}
-                                </div>
-                              </td>
-                              <td>{src.module_name ?? <span className="muted small">—</span>}</td>
                               <td>{src.producer_name ?? '-'}</td>
                               <td>
                                 {APPEARANCE_TAG[src.appearance] ? (
                                   <span className={`tag ${APPEARANCE_TAG[src.appearance].cls}`}>{APPEARANCE_TAG[src.appearance].label}</span>
                                 ) : <span className="muted small">—</span>}
                               </td>
-                              <td>{Number(src.quantity_kg_received ?? 0).toFixed(2)}</td>
                               <td>
                                 <span style={{ color: avail <= 0 ? '#dc2626' : avail < 50 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
                                   {avail.toFixed(2)}
@@ -887,17 +1131,35 @@ export default function BunquesPage() {
                                 {selected ? (() => {
                                   const qty = parseFloat(selected.quantity_kg)
                                   const over = !isNaN(qty) && qty > avail + 0.01
+                                  const empty = !(qty > 0)
+                                  const cellStyle = {
+                                    width: 80, padding: '5px 8px', borderRadius: 6,
+                                    border: `1px solid ${over ? '#dc2626' : empty ? 'var(--warning)' : 'var(--border)'}`,
+                                    background: over ? '#fee2e2' : empty ? '#fffbeb' : undefined,
+                                  }
+                                  if (modoSacos) {
+                                    return (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                                        <input
+                                          type="number" min="0" step="1" placeholder={empty ? "sacos" : `≈ ${(qty / kgPerSaco).toFixed(1)}`}
+                                          title={over ? `Máximo disponible: ${avail.toFixed(2)} kg` : empty ? 'Escriba los sacos a usar' : undefined}
+                                          value={selected.sacos ?? ''}
+                                          style={{ ...cellStyle, width: 70 }}
+                                          onChange={e => updateSacos(exitItemId, e.target.value, avail)}
+                                        />
+                                        <span className="muted small">= {empty ? '—' : `${qty.toFixed(2)} kg`}</span>
+                                      </div>
+                                    )
+                                  }
                                   return (
                                     <input
                                       type="number"
                                       min="0.1"
                                       step="0.01"
+                                      placeholder="kg"
+                                      title={over ? `Máximo disponible: ${avail.toFixed(2)} kg` : empty ? 'Escriba los kg a usar' : undefined}
                                       value={selected.quantity_kg}
-                                      style={{
-                                        width: 80, padding: '5px 8px', borderRadius: 6,
-                                        border: `1px solid ${over ? '#dc2626' : 'var(--border)'}`,
-                                        background: over ? '#fee2e2' : undefined,
-                                      }}
+                                      style={cellStyle}
                                       onChange={e => updateQty(exitItemId, e.target.value)}
                                       onBlur={e => {
                                         const v = parseFloat(e.target.value)
@@ -908,141 +1170,161 @@ export default function BunquesPage() {
                                   )
                                 })() : <span className="muted small">—</span>}
                               </td>
-                              <td>
-                                {selected ? (
-                                  <input
-                                    type="number" min="0" step="1" placeholder="cant."
-                                    value={selected.sacos ?? ''}
-                                    style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)' }}
-                                    onChange={e => updateSacos(exitItemId, e.target.value, avail)}
-                                  />
-                                ) : <span className="muted small">—</span>}
-                              </td>
                             </tr>
                           )
                         })}
                       </tbody>
                     </table>
                   </div>
-                  <p className="muted small" style={{ margin: '4px 0 0' }}>
-                    "o sacos" calcula el kg automáticamente ({kgPerSaco} kg por saco). El kg es el dato que se guarda — editable si la balanza da otro número.
-                  </p>
+                  {paso1Ok && !bloqueadoPorOrden && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                      <button className="btn small primary" onClick={() => setOpenStep(2)}>Siguiente: resultado del tamizado</button>
+                    </div>
+                  )}
+                  </>)}
 
-                  {/* ── Resultado del tamizado ── */}
-                  <div style={{ fontSize: 12, fontWeight: 700, color: '#000', margin: '16px 0 8px' }}>
-                    Resultado del tamizado {liveTotal > 0 && <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(sobre {liveTotal.toFixed(2)} kg de insumos elegidos arriba)</span>}
+                  {/* ── Paso 2: Resultado del tamizado ── */}
+                  <div style={{ marginTop: 10 }}>
+                    <StepTitle
+                      n={2} done={paso2Ok}
+                      title={openStep === 2
+                        ? <>Resultado del tamizado {liveTotal > 0 && <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(sobre {liveTotal.toFixed(2)} kg)</span>}
+                            <Hint text="Si todavía no tiene el resultado, déjelo en blanco y guarde: puede completarlo después." /></>
+                        : 'Resultado del tamizado'}
+                      open={openStep === 2} onOpen={() => setOpenStep(2)}
+                      summary={hasVals ? `tamizada ${tam.toFixed(2)} kg · merma ${Math.max(0, merma).toFixed(2)} kg${balanceOk ? '' : ' · no cierra'}` : 'sin resultado todavía'}
+                    />
                   </div>
-                  <p className="muted small" style={{ margin: '0 0 8px' }}>
-                    Opcional: si todavía no se sabe, dejar en blanco y completar más tarde editando el {BUNQUE_LABEL_LOWER}.
-                  </p>
+                  {openStep === 2 && (<>
+                  {liveTotal === 0 && (
+                    <p className="muted small" style={{ margin: '0 0 8px' }}>Primero elija la materia prima (paso 1).</p>
+                  )}
+                  {/* Un solo campo por dato: en kg, o en sacos si está activo
+                      "Ingresar en sacos" (el kg se calcula y se muestra al lado). */}
                   <div className="grid" style={{ gap: 8 }}>
-                    <div className="field" style={{ margin: 0 }}>
-                      <label>Panela tamizada (kg)</label>
-                      <input type="number" min="0" step="0.01" value={resultForm.tamizada_kg}
-                        onChange={e => applyKg('tamizada_kg', 'tamizada_sacos', e.target.value)} />
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                        <span className="muted small">o por sacos:</span>
-                        <input type="number" min="0" step="1" placeholder="cant." style={{ width: 70, fontSize: 12, padding: '3px 6px', height: 'auto' }}
-                          value={resultForm.tamizada_sacos}
-                          onChange={e => applySacos('tamizada_kg', 'tamizada_sacos', e.target.value)} />
-                        <span className="muted small">× {kgPerSaco} kg</span>
-                      </div>
-                    </div>
-                    <div className="field" style={{ margin: 0 }}>
-                      <label>Reproceso (kg)</label>
-                      <input type="number" min="0" step="0.01" value={resultForm.reproceso_kg}
-                        onChange={e => applyKg('reproceso_kg', 'reproceso_sacos', e.target.value)} />
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                        <span className="muted small">o por sacos:</span>
-                        <input type="number" min="0" step="1" placeholder="cant." style={{ width: 70, fontSize: 12, padding: '3px 6px', height: 'auto' }}
-                          value={resultForm.reproceso_sacos}
-                          onChange={e => applySacos('reproceso_kg', 'reproceso_sacos', e.target.value)} />
-                        <span className="muted small">× {kgPerSaco} kg</span>
-                      </div>
-                    </div>
-                    <div className="field" style={{ margin: 0 }}>
-                      <label>Descarte (kg)</label>
-                      <input type="number" min="0" step="0.01" value={resultForm.descarte_kg}
-                        onChange={e => applyKg('descarte_kg', 'descarte_sacos', e.target.value)} />
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                        <span className="muted small">o por sacos:</span>
-                        <input type="number" min="0" step="1" placeholder="cant." style={{ width: 70, fontSize: 12, padding: '3px 6px', height: 'auto' }}
-                          value={resultForm.descarte_sacos}
-                          onChange={e => applySacos('descarte_kg', 'descarte_sacos', e.target.value)} />
-                        <span className="muted small">× {kgPerSaco} kg</span>
-                      </div>
-                    </div>
+                    {[
+                      { kg: 'tamizada_kg', sacos: 'tamizada_sacos', label: 'Panela tamizada', req: true,
+                        warn: resultadoIncompleto && tamVacio, err: tamExcede, falta: 'Falta este dato.' },
+                      { kg: 'reproceso_kg', sacos: 'reproceso_sacos', label: 'Reproceso', req: false },
+                      { kg: 'descarte_kg', sacos: 'descarte_sacos', label: 'Descarte', req: true,
+                        warn: resultadoIncompleto && desVacio, falta: 'Falta este dato — si no hubo descarte, escriba 0.' },
+                    ].map(c => {
+                      const style = c.warn ? { borderColor: 'var(--warning)', background: '#fffbeb' } : c.err ? { borderColor: '#dc2626', background: '#fee2e2' } : undefined
+                      return (
+                        <div key={c.kg} className="field" style={{ margin: 0 }}>
+                          <label>
+                            {c.label} ({modoSacos ? 'sacos' : 'kg'}){c.req ? ' *' : <span className="muted small"> — opcional</span>}
+                          </label>
+                          {modoSacos ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <input type="number" min="0" step="1" value={resultForm[c.sacos]} style={style}
+                                placeholder={c.warn && c.kg === 'descarte_kg' ? 'Si no hubo, 0' : resultForm[c.kg] !== '' ? `≈ ${(Number(resultForm[c.kg]) / kgPerSaco).toFixed(1)}` : undefined}
+                                onChange={e => applySacos(c.kg, c.sacos, e.target.value)} />
+                              <span className="muted small" style={{ whiteSpace: 'nowrap' }}>= {resultForm[c.kg] === '' ? '—' : `${Number(resultForm[c.kg]).toFixed(2)} kg`}</span>
+                            </div>
+                          ) : (
+                            <input type="number" min="0" step="0.01" value={resultForm[c.kg]} style={style}
+                              placeholder={c.warn && c.kg === 'descarte_kg' ? 'Si no hubo, 0' : undefined}
+                              onChange={e => applyKg(c.kg, c.sacos, e.target.value)} />
+                          )}
+                          {c.warn && <span style={{ color: 'var(--warning)', fontSize: 12 }}>{c.falta}</span>}
+                        </div>
+                      )
+                    })}
                   </div>
-                  <p className="muted small" style={{ margin: '6px 0 0' }}>
-                    Los sacos son solo para calcular el kg más rápido. El kg de arriba es el que se guarda y el que manda en el balance — si la balanza da otro número, corregir ahí antes de guardar.
-                  </p>
                   {hasVals && (
-                    <div style={{ marginTop: 10, padding: '12px 14px', background: 'rgba(15,76,92,0.10)', borderRadius: 8, border: '1px solid var(--primary)', fontSize: 13 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase' }}>
-                          Cómo se reparten los {liveTotal.toFixed(2)} kg
-                        </span>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: balanceOk ? 'var(--success)' : '#dc2626', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <Icon name={balanceOk ? 'check' : 'x'} size={12} />
-                          {balanceOk ? 'cierra el balance' : 'no cierra el balance'}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', height: 22, borderRadius: 6, overflow: 'hidden', border: '2px solid #fff', marginBottom: 10 }}>
+                    <div style={{ marginTop: 10, fontSize: 13 }}>
+                      {/* Balance compacto: una barra + una línea. El detalle
+                          de cada parte está en el title de su tramo. */}
+                      <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: 'rgba(15,76,92,0.10)', marginBottom: 6 }}>
                         {repartos.filter(r => r.kg > 0).map(r => (
                           <div key={r.label} style={{ width: `${pct(r.kg)}%`, background: r.color }} title={`${r.label}: ${r.kg.toFixed(2)} kg`} />
                         ))}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8 }}>
-                        {repartos.map(r => (
-                          <div key={r.label} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                            <span style={{ width: 10, height: 10, borderRadius: 3, background: r.color, marginTop: 3, flexShrink: 0 }} />
-                            <div>
-                              <div style={{ color: 'var(--primary-600)', fontSize: 11 }}>{r.label}{r.label === 'Merma' && <span> (calculada)</span>}</div>
-                              <strong style={{ fontSize: 14 }}>{r.kg.toFixed(2)} kg</strong>
-                            </div>
-                          </div>
-                        ))}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: 3, background: repartos[3].color }} />
+                          Merma <strong>{Math.max(0, merma).toFixed(2)} kg</strong>
+                          {liveTotal > 0 && <span className="muted">({(Math.max(0, merma) / liveTotal * 100).toFixed(1)}%)</span>}
+                          <Hint text="La merma se calcula sola: materia prima − tamizada − reproceso − descarte. Pase el mouse sobre la barra para ver cada parte." />
+                        </span>
+                        <span style={{ fontWeight: 700, color: balanceOk ? 'var(--success)' : '#dc2626', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <Icon name={balanceOk ? 'check' : 'x'} size={12} />
+                          {balanceOk ? 'cierra el balance' : 'no cierra el balance'}
+                        </span>
                       </div>
                       {tamExcede && (
                         <p style={{ color: '#dc2626', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
                           <Icon name="x" size={13} />
-                          La panela tamizada supera el total de insumos — no es físicamente posible.
+                          La panela tamizada supera el total de materia prima — no es físicamente posible. Revise los kg.
                         </p>
                       )}
                       {sumaExcede && !tamExcede && (
                         <p style={{ color: '#dc2626', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
                           <Icon name="x" size={13} />
-                          La suma tamizada + reproceso + descarte supera el total de insumos de este {BUNQUE_LABEL_LOWER}.
+                          La suma tamizada + reproceso + descarte supera el total de materia prima de este {BUNQUE_LABEL_LOWER}. Revise los kg.
                         </p>
                       )}
                     </div>
                   )}
+                  {paso2Ok && !bloqueadoPorOrden && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                      <button className="btn small primary" onClick={() => setOpenStep(3)}>Siguiente: repartir</button>
+                    </div>
+                  )}
+                  </>)}
 
-                  {/* ── Repartir a lotes ── */}
-                  {hasVals && (
-                    <div style={{ marginTop: 16 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: '#000' }}>
-                          Repartir a {LOTE_LABEL_PLURAL_LOWER}
-                        </div>
+                  </fieldset>
+
+                  {/* ── Paso 3: Repartir a lotes ── se ve siempre (para que se
+                      sepa que existe), bloqueado hasta completar el paso 2. */}
+                  {!hasVals ? (
+                    <div style={{ marginTop: 10 }}>
+                      <StepTitle n={3} title="Repartir" done={false} open={false} disabled summary="se habilita al terminar el paso 2" />
+                    </div>
+                  ) : openStep !== 3 ? (
+                    <div style={{ marginTop: 10 }}>
+                      <StepTitle
+                        n={3} title="Repartir" done={paso3State === 'done'} open={false} onOpen={() => setOpenStep(3)}
+                        summary={`${repartoTotalLive.toFixed(2)} de ${tam.toFixed(2)} kg repartidos`}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10 }}>
+                      <StepTitle
+                        n={3} done={paso3State === 'done'}
+                        title={<>Repartir a {getLoteLabelPluralLower(COOPERATIVE, repartoVenta)}
+                          <Hint text={`Puede repartir a uno o varios ${LOTE_LABEL_PLURAL_LOWER}, de cualquier orden. No hace falta repartir todo ahora: lo que falte queda "sin repartir" y se completa después.`} /></>}
+                      >
                         <div style={{
                           fontSize: 13, fontWeight: 700, color: '#fff',
                           background: repartoExcede ? '#dc2626' : 'var(--primary)',
                           borderRadius: 6, padding: '4px 10px',
                         }}>
                           Repartido: {repartoTotalLive.toFixed(2)} / {tam.toFixed(2)} kg
+                          {!repartoExcede && tam - repartoTotalLive > 0.01 && <span style={{ fontWeight: 400 }}> · faltan {(tam - repartoTotalLive).toFixed(2)}</span>}
                         </div>
-                      </div>
-                      <p className="muted small" style={{ margin: '0 0 8px' }}>
-                        A qué {LOTE_LABEL_LOWER}(s) va la panela tamizada de este {BUNQUE_LABEL_LOWER} — puede repartirse a más de uno, de cualquier orden. No hace falta repartir el 100% ahora: lo que falte queda "sin repartir" y se puede completar más adelante.
-                      </p>
-                      {contextLote && !repartoRows.some(r => r.plant_batch_id === contextLote.id) && (
+                      </StepTitle>
+                      {porVenta && (
+                        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                          {[['exportacion', 'Exportación'], ['nacional', 'Nacional']].map(([value, text]) => (
+                            <button
+                              key={value}
+                              className={`btn small ${ventaFiltro === value ? 'primary' : 'outline'}`}
+                              onClick={() => setVentaFiltro(value)}
+                            >
+                              {text}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {contextLote && contextLote.plant_orders?.status !== 'completado' && !repartoRows.some(r => r.plant_batch_id === contextLote.id) && (
                         <button
                           className="btn small primary"
                           style={{ marginBottom: 8 }}
                           onClick={() => addRepartoLote(contextLote)}
                         >
-                          + Agregar {loteLabel(contextLote)} (el {LOTE_LABEL_LOWER} que abriste)
+                          + Agregar {loteLabel(contextLote)} (el {getLoteLabelLower(COOPERATIVE, contextLote.plant_orders)} que abriste)
                         </button>
                       )}
                       {repartoRows.length > 0 && (
@@ -1050,13 +1332,26 @@ export default function BunquesPage() {
                           <table className="table small" style={{ marginBottom: 8 }}>
                             <thead><tr><th>{LOTE_LABEL}</th><th>Kg</th><th></th></tr></thead>
                             <tbody>
-                              {repartoRows.map(r => (
+                              {repartoRows.map(r => locked.has(r.plant_batch_id) ? (
                                 <tr key={r.plant_batch_id}>
-                                  <td>{r.label}</td>
+                                  <td>
+                                    {r.label}<VentaTag cooperative={COOPERATIVE} order={r} />
+                                    <div style={{ fontSize: 11, color: 'var(--primary)' }}>Orden completada — reábrala para corregir</div>
+                                  </td>
+                                  <td><strong>{Number(r.kg).toFixed(2)}</strong></td>
+                                  <td></td>
+                                </tr>
+                              ) : (
+                                <tr key={r.plant_batch_id}>
+                                  <td>{r.label}<VentaTag cooperative={COOPERATIVE} order={r} /></td>
                                   <td>
                                     <input
-                                      type="number" min="0.01" step="0.01" value={r.kg}
-                                      style={{ width: 90, padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)' }}
+                                      type="number" min="0.01" step="0.01" value={r.kg} placeholder="kg"
+                                      style={{
+                                        width: 90, padding: '5px 8px', borderRadius: 6,
+                                        border: `1px solid ${parseFloat(r.kg) > 0 ? 'var(--border)' : 'var(--warning)'}`,
+                                        background: parseFloat(r.kg) > 0 ? undefined : '#fffbeb',
+                                      }}
                                       onChange={e => updateRepartoKg(r.plant_batch_id, e.target.value)}
                                     />
                                   </td>
@@ -1076,22 +1371,20 @@ export default function BunquesPage() {
                         </p>
                       )}
                       <div className="field" style={{ margin: 0 }}>
-                        <label>Buscar {LOTE_LABEL_LOWER} (por N° de {LOTE_LABEL_LOWER})</label>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          Buscar {getLoteLabelLower(COOPERATIVE, repartoVenta)} por N°
+                          <Hint text="Sin escribir nada se muestran los lotes de órdenes en proceso. Escriba 2 o más caracteres para buscar por N° en cualquier orden no completada." />
+                        </label>
                         <input
                           type="text"
-                          placeholder={`Dejar vacío para ver los ${LOTE_LABEL_PLURAL_LOWER} en proceso, o escribir el N° de ${LOTE_LABEL_LOWER}...`}
+                          placeholder="N° de lote..."
                           value={loteSearch}
                           onChange={e => setLoteSearch(e.target.value)}
                         />
-                        <p className="muted small" style={{ margin: '4px 0 0' }}>
-                          {loteSearch.trim().length >= 2
-                            ? `Buscando por N° de ${LOTE_LABEL_LOWER} en cualquier orden (incluidas completadas).`
-                            : `Mostrando ${LOTE_LABEL_PLURAL_LOWER} de órdenes en proceso — escriba 2 o más caracteres para buscar por N° en cualquier orden.`}
-                        </p>
                       </div>
                       {visibleLoteResults.length === 0 && (
                         <p className="muted small" style={{ margin: '6px 0 0' }}>
-                          {loteSearch.trim().length >= 2 ? `Ningún ${LOTE_LABEL_LOWER} coincide con la búsqueda.` : `No hay ${LOTE_LABEL_PLURAL_LOWER} en proceso por ahora — escriba el N° del ${LOTE_LABEL_LOWER} que busca.`}
+                          {loteSearch.trim().length >= 2 ? 'Ningún lote coincide.' : porVenta ? 'No hay lotes en proceso de este tipo.' : 'No hay lotes en proceso.'}
                         </p>
                       )}
                       {visibleLoteResults.length > 0 && (
@@ -1104,6 +1397,7 @@ export default function BunquesPage() {
                             >
                               <span style={{ fontSize: 12 }}>
                                 {loteLabel(pb)} — {pb.brand} · {packagingLabel(pb)}{pb.plant_orders ? ` · orden ${pb.plant_orders.client_order_number || pb.plant_orders.order_code}` : ''}
+                                <VentaTag cooperative={COOPERATIVE} order={pb.plant_orders} />
                               </span>
                               <button className="btn small primary" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); addRepartoLote(pb) }}>+ Agregar</button>
                             </div>
@@ -1113,11 +1407,33 @@ export default function BunquesPage() {
                     </div>
                   )}
 
+                  {/* Qué falta para poder guardar -- se ve ANTES de hacer
+                      clic, junto al botón (que queda desactivado). */}
+                  {faltantes.length > 0 && (
+                    <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fee2e2', fontSize: 13, color: '#b91c1c' }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <Icon name="alertTriangle" size={14} /> Para poder guardar, corrija:
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: 20 }}>
+                        {faltantes.map(f => <li key={f}>{f}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {avisos.length > 0 && (
+                    <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--warning)', background: '#fffbeb', fontSize: 12, color: '#b45309' }}>
+                      {avisos.map(a => <div key={a}>{a}</div>)}
+                    </div>
+                  )}
                   {error && <p style={{ color: '#dc2626', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', justifyContent: 'flex-end' }}>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                     {isDirty && <span className="muted small" style={{ color: 'var(--warning)' }}>Cambios sin guardar</span>}
-                    <button className="btn small" onClick={() => attemptCollapseBunque(bunque)} disabled={saving}>Cancelar</button>
-                    <button className="btn small primary" onClick={() => handleSaveBunque(bunque)} disabled={saving || bloqueado || repartoExcede}>
+                    <button className="btn small" onClick={() => attemptCollapseBunque(bunque)} disabled={saving}>Cerrar</button>
+                    <button
+                      className="btn small primary"
+                      onClick={() => handleSaveBunque(bunque)}
+                      disabled={saving || faltantes.length > 0}
+                      title={faltantes.length > 0 ? 'Revise la lista de arriba: hay datos por corregir' : undefined}
+                    >
                       {saving ? 'Guardando...' : `Guardar ${BUNQUE_LABEL_LOWER}`}
                     </button>
                   </div>
@@ -1129,6 +1445,23 @@ export default function BunquesPage() {
       })}
       </div>
       {confirmDialog}
+      {exitPrompt && (
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ maxWidth: 440 }}>
+            <div className="modal-body">
+              <h3 style={{ margin: '0 0 8px' }}>Cambios sin guardar</h3>
+              <p style={{ margin: 0, fontSize: 14 }}>
+                El {BUNQUE_LABEL_LOWER} {exitPrompt.bunque_number} tiene cambios sin guardar. ¿Qué desea hacer?
+              </p>
+            </div>
+            <div className="modal-actions" style={{ flexWrap: 'wrap' }}>
+              <button className="btn small" onClick={() => setExitPrompt(null)} autoFocus>Seguir editando</button>
+              <button className="btn small danger primary" onClick={() => discardAndCollapse(exitPrompt)}>Descartar cambios</button>
+              <button className="btn small primary" onClick={() => saveAndCollapse(exitPrompt)} disabled={saving}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -72,8 +72,8 @@ export async function fetchControlEnvasadoData(order) {
   return { blocks }
 }
 
-function buildControlEnvasadoBlockHTML(cooperative, block) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+function buildControlEnvasadoBlockHTML(cooperative, order, block) {
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const BUNQUE_LABEL = getBunqueLabel(cooperative)
   const hasDetector = cooperative?.features?.detectorMetales
   const bodyRows = block.rows.map(r => `
@@ -156,7 +156,7 @@ export function buildPrintHTMLControlEnvasado(cooperative, order, containerNumbe
     </div>
   </div>
 
-  ${blocks.map(b => buildControlEnvasadoBlockHTML(cooperative, b)).join('')}
+  ${blocks.map(b => buildControlEnvasadoBlockHTML(cooperative, order, b)).join('')}
 
   <div style="margin-top:24px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px;font-size:11px">
     <div><span class="meta-label">Llenado por:</span> ${llenadoPor}</div>
@@ -171,7 +171,7 @@ export function controlEnvasadoPdf(cooperative, order, containerNumber, data, fi
 }
 
 export function controlEnvasadoExcel(cooperative, order, containerNumber, { blocks }) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const BUNQUE_LABEL = getBunqueLabel(cooperative)
   const aoa = [
     ['CONTROL DEL ENVASADO'],

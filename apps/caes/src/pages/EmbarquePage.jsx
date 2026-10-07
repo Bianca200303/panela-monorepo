@@ -13,8 +13,6 @@ import { QUICK_DOCS } from '../lib/formatos'
 import { loteKg, loteLabel, loteBunques, isOrderNacional, BUNQUE_ALLOCATIONS_SELECT } from '@panela/core/lib/loteHelpers'
 import { getLoteLabelLower, getLoteLabelPluralLower } from '@panela/core/lib/labels'
 
-const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
-const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
 import ContainerLoadingModal from '@panela/core/pages/ContainerLoadingModal'
 import PackingListNacionalCaesModal from './PackingListNacionalCaesModal'
 import TransportUnitControlsCaesModal from './TransportUnitControlsCaesModal'
@@ -411,7 +409,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
     }
     const itemsToSave = dispatchItems.filter(it => parseFloat(it.quantity_kg) > 0)
     if (itemsToSave.length === 0) {
-      setError(`Ingrese al menos un ${LOTE_LABEL_LOWER} con kg despachados`)
+      setError(`Ingrese al menos un ${getLoteLabelLower(COOPERATIVE, modalDispatch.order)} con kg despachados`)
       return
     }
 
@@ -1018,9 +1016,9 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </p>
 
               <div className="field">
-                <label>Kg despachados por {LOTE_LABEL_LOWER}</label>
+                <label>Kg despachados por {getLoteLabelLower(COOPERATIVE, modalDispatch.order)}</label>
                 {dispatchItems.length === 0 ? (
-                  <p className="muted small">Esta orden no tiene {LOTE_LABEL_PLURAL_LOWER}.</p>
+                  <p className="muted small">Esta orden no tiene {getLoteLabelPluralLower(COOPERATIVE, modalDispatch.order)}.</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {dispatchItems.map(it => (

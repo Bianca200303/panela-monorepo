@@ -161,7 +161,7 @@ export async function fetchRegistroTrazabilidad(order, kgPerQuintal) {
 }
 
 export function buildPrintHTMLRegistroTrazabilidad(cooperative, order, containerNumber, rows, certNames, firmantes) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const clientName = order?.plant_clients?.name ?? '—'
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : '—'
 
@@ -267,7 +267,7 @@ export function registroTrazabilidadPdf(cooperative, order, containerNumber, { r
 }
 
 export function registroTrazabilidadExcel(cooperative, order, containerNumber, { rows, certNames }) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const header = [
     ['REGISTRO DE TRAZABILIDAD'],

@@ -1,7 +1,7 @@
 import { useCooperative } from '../lib/cooperativeContext'
 import { getLoteLabelLower, getBunqueLabelLower } from '../lib/labels'
 
-export default function TrazabilidadTable({ inputs, stockItems, processing }) {
+export default function TrazabilidadTable({ inputs, stockItems, processing, order }) {
   const COOPERATIVE = useCooperative()
   const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
   const BUNQUE_LABEL_LOWER = getBunqueLabelLower(COOPERATIVE)
@@ -58,7 +58,7 @@ export default function TrazabilidadTable({ inputs, stockItems, processing }) {
       </div>
       {processing && (
         <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 12, color: 'var(--muted)', flexWrap: 'wrap' }}>
-          <span>Panela tamizada (asignada a este {LOTE_LABEL_LOWER}): <strong style={{ color: 'var(--success)' }}>{Number(processing.allocated_kg ?? 0).toFixed(2)} kg</strong></span>
+          <span>Panela tamizada (asignada a este {getLoteLabelLower(COOPERATIVE, order)}): <strong style={{ color: 'var(--success)' }}>{Number(processing.allocated_kg ?? 0).toFixed(2)} kg</strong></span>
           <span>Reproceso: <strong>{Number(processing.allocated_reproceso_kg ?? 0).toFixed(2)} kg</strong></span>
           <span>Descarte: <strong>{Number(processing.allocated_descarte_kg ?? 0).toFixed(2)} kg</strong></span>
           <span>Merma: <strong style={{ color: Number(processing.allocated_merma_kg ?? 0) / totalUsed > 0.05 ? 'var(--warning)' : 'inherit' }}>

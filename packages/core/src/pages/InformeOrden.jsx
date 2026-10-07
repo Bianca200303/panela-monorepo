@@ -8,6 +8,7 @@ import { buildPrintHTMLFcpo } from '../lib/formatos/fcpo'
 import { buildPrintHTMLFcclr } from '../lib/formatos/fcclr'
 import { buildPrintHTMLFqd } from '../lib/formatos/fqd'
 import Secc from './Secc'
+import { quickDocLabel } from '../lib/formatos/shared'
 
 const FLDH_ALL_AREAS = [
   'reception_milling', 'thermal_treatment', 'homogenization_packaging',
@@ -105,21 +106,21 @@ export default function InformeOrden({ order, containerNumber, data, loading, on
 
             if (entry?.error) {
               return (
-                <Secc key={d.key} titulo={d.label} colorTitulo="#7c3aed" bgBody="#faf5ff" badge={<span style={{ color: '#dc2626', fontSize: 11 }}>No disponible</span>}>
+                <Secc key={d.key} titulo={quickDocLabel(d, order)} colorTitulo="#7c3aed" bgBody="#faf5ff" badge={<span style={{ color: '#dc2626', fontSize: 11 }}>No disponible</span>}>
                   <p className="muted small" style={{ margin: 0 }}>{entry.error}</p>
                 </Secc>
               )
             }
             if (count === 0) {
               return (
-                <Secc key={d.key} titulo={d.label} colorTitulo="#7c3aed" bgBody="#faf5ff" badge="Sin datos">
+                <Secc key={d.key} titulo={quickDocLabel(d, order)} colorTitulo="#7c3aed" bgBody="#faf5ff" badge="Sin datos">
                   <p className="muted small" style={{ margin: 0 }}>Todavía no hay datos registrados para este documento.</p>
                 </Secc>
               )
             }
             const html = d.buildPdfHtml(order, containerNumber, entry.data, [])
             return (
-              <Secc key={d.key} titulo={d.label} colorTitulo="#7c3aed" bgBody="#faf5ff" badge={`${count}`}>
+              <Secc key={d.key} titulo={quickDocLabel(d, order)} colorTitulo="#7c3aed" bgBody="#faf5ff" badge={`${count}`}>
                 <iframe
                   srcDoc={html}
                   style={{ width: '100%', minHeight: 400, border: 'none', display: 'block' }}

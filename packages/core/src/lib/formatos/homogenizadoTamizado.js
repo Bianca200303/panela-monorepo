@@ -91,8 +91,8 @@ async function fetchHomogenizadoTamizadoData(order, kgPerQuintal) {
   return { blocks, certNames, kgPerQuintal }
 }
 
-function buildHomogenizadoBunqueBlockHTML(cooperative, block, kgPerQuintal) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+function buildHomogenizadoBunqueBlockHTML(cooperative, order, block, kgPerQuintal) {
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const BUNQUE_LABEL = getBunqueLabel(cooperative)
   const { loteLabel: bloqueLoteLabel, bunqueNumber, fecha, rows, bunque } = block
 
@@ -211,7 +211,7 @@ export function buildPrintHTMLRegistroHomogenizadoTamizado(cooperative, order, c
     </div>
   </div>
 
-  ${blocks.map(b => buildHomogenizadoBunqueBlockHTML(cooperative, b, kgPerQuintal)).join('')}
+  ${blocks.map(b => buildHomogenizadoBunqueBlockHTML(cooperative, order, b, kgPerQuintal)).join('')}
 
   ${firmasHTML ? `<div class="formato-firmas">${firmasHTML}</div>` : ''}
 </body>
@@ -223,7 +223,7 @@ export function registroHomogenizadoTamizadoPdf(cooperative, order, containerNum
 }
 
 export function registroHomogenizadoTamizadoExcel(cooperative, order, containerNumber, { blocks, certNames, kgPerQuintal }) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const BUNQUE_LABEL = getBunqueLabel(cooperative)
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const aoa = [

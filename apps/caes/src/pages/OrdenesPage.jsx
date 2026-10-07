@@ -9,7 +9,6 @@ import { getLoteLabelLower, getLoteLabelPluralLower } from '@panela/core/lib/lab
 import { useNavigate } from 'react-router-dom'
 
 const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
-const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
 import EnvasadoModal from '@panela/core/pages/EnvasadoModal'
 import CalidadEnvasadoModal from '@panela/core/pages/CalidadEnvasadoModal'
 import SelladoEnvasadoCaesModal from './SelladoEnvasadoCaesModal'
@@ -626,7 +625,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       return
     }
     if (!brand.trim() || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
-      setError(`Marca, número de ${LOTE_LABEL_LOWER}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
+      setError(`Marca, número de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalLote))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
       return
     }
     const pCount = parseInt(packaging_count)
@@ -724,7 +723,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       return
     }
     if (!brand.trim() || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
-      setError(`Marca, número de ${LOTE_LABEL_LOWER}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
+      setError(`Marca, número de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalEditLote.order_id))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
       return
     }
     const pCount = parseInt(packaging_count)
@@ -860,6 +859,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
   const loteOrderClient = clients.find(c => c.id === loteAddOrder?.client_id)
   const editLoteOrder       = orders.find(o => o.id === modalEditLote?.order_id)
   const editLoteOrderClient = clients.find(c => c.id === editLoteOrder?.client_id)
+  const ADD_LOTE_LABEL_LOWER  = getLoteLabelLower(COOPERATIVE, loteAddOrder)
+  const EDIT_LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, editLoteOrder)
 
   // Buscador: filtra por código de orden, mercado, cliente o marca de los lotes.
   const searchNeedle = searchQuery.trim().toLowerCase()
@@ -1112,7 +1113,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </div>
               )}
               <p className="muted small" style={{ margin: '0 0 8px' }}>
-                La carga total se calcula sola, a medida que agregues {LOTE_LABEL_PLURAL_LOWER}.
+                La carga total se calcula sola, a medida que agregues {getLoteLabelPluralLower(COOPERATIVE, formOrden)}.
               </p>
               {formOrden.sale_type !== 'nacional' && (
                 <p className="muted small" style={{ margin: '0 0 8px' }}>
@@ -1319,7 +1320,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </div>
               )}
               <p className="muted small" style={{ margin: '0 0 8px' }}>
-                Carga total actual: <strong>{modalEditOrden.total_kg != null ? Number(modalEditOrden.total_kg).toFixed(1) : '0'} kg</strong> — se recalcula sola según los {LOTE_LABEL_PLURAL_LOWER}.
+                Carga total actual: <strong>{modalEditOrden.total_kg != null ? Number(modalEditOrden.total_kg).toFixed(1) : '0'} kg</strong> — se recalcula sola según los {getLoteLabelPluralLower(COOPERATIVE, formEditOrden)}.
               </p>
               <div className="grid two" style={{ gap: 8, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
@@ -1421,7 +1422,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-body">
-              <h3 style={{ margin: '0 0 16px' }}>Agregar {LOTE_LABEL_LOWER} de planta</h3>
+              <h3 style={{ margin: '0 0 16px' }}>Agregar {ADD_LOTE_LABEL_LOWER} de planta</h3>
               <div className="field">
                 <label>Producto del catálogo *</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1483,7 +1484,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   )}
                 </div>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Número de {LOTE_LABEL_LOWER} *</label>
+                  <label>Número de {ADD_LOTE_LABEL_LOWER} *</label>
                   <input
                     type="text"
                     value={formLote.client_batch_number}
@@ -1540,7 +1541,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </p>
               )}
               <div className="field" style={{ marginTop: 8 }}>
-                <label>Descripción del {LOTE_LABEL_LOWER}</label>
+                <label>Descripción del {ADD_LOTE_LABEL_LOWER}</label>
                 <input
                   type="text"
                   placeholder="Ej: Panela orgánica en polvo para Ethiquable"
@@ -1568,7 +1569,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </div>
                 {COOPERATIVE?.features?.pallets && (
                   <div className="field" style={{ margin: 0 }}>
-                    <label>Pallets por {LOTE_LABEL_LOWER}</label>
+                    <label>Pallets por {ADD_LOTE_LABEL_LOWER}</label>
                     <input
                       type="number"
                       min="1"
@@ -1582,7 +1583,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
               {availableCerts.length > 0 && (
                 <div className="field" style={{ marginTop: 12 }}>
-                  <label>Certificaciones del {LOTE_LABEL_LOWER}</label>
+                  <label>Certificaciones del {ADD_LOTE_LABEL_LOWER}</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                     {availableCerts.map(cert => (
                       <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: loteCertIds.includes(cert.id) ? '#dbeafe' : '#f1f5f9', border: `1px solid ${loteCertIds.includes(cert.id) ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
@@ -1602,7 +1603,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalLote(null); setLoteCertIds([]) }} disabled={saving}>Cancelar</button>
               <button className="btn small primary" onClick={handleCreateLote} disabled={saving}>
-                {saving ? 'Guardando...' : `Agregar ${LOTE_LABEL_LOWER}`}
+                {saving ? 'Guardando...' : `Agregar ${ADD_LOTE_LABEL_LOWER}`}
               </button>
             </div>
           </div>
@@ -1614,7 +1615,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-body">
-              <h3 style={{ margin: '0 0 16px' }}>Editar {LOTE_LABEL_LOWER} de planta</h3>
+              <h3 style={{ margin: '0 0 16px' }}>Editar {EDIT_LOTE_LABEL_LOWER} de planta</h3>
               <div className="field">
                 <label>Producto del catálogo *</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1676,7 +1677,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   )}
                 </div>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Número de {LOTE_LABEL_LOWER} *</label>
+                  <label>Número de {EDIT_LOTE_LABEL_LOWER} *</label>
                   <input
                     type="text"
                     value={formEditLote.client_batch_number}
@@ -1733,7 +1734,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </p>
               )}
               <div className="field" style={{ marginTop: 8 }}>
-                <label>Descripción del {LOTE_LABEL_LOWER}</label>
+                <label>Descripción del {EDIT_LOTE_LABEL_LOWER}</label>
                 <input
                   type="text"
                   placeholder="Ej: Panela orgánica en polvo para Ethiquable"
@@ -1761,7 +1762,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </div>
                 {COOPERATIVE?.features?.pallets && (
                   <div className="field" style={{ margin: 0 }}>
-                    <label>Pallets por {LOTE_LABEL_LOWER}</label>
+                    <label>Pallets por {EDIT_LOTE_LABEL_LOWER}</label>
                     <input
                       type="number"
                       min="1"
@@ -1775,7 +1776,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
               {availableCerts.length > 0 && (
                 <div className="field" style={{ marginTop: 12 }}>
-                  <label>Certificaciones del {LOTE_LABEL_LOWER}</label>
+                  <label>Certificaciones del {EDIT_LOTE_LABEL_LOWER}</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                     {availableCerts.map(cert => (
                       <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: editLoteCertIds.includes(cert.id) ? '#dbeafe' : '#f1f5f9', border: `1px solid ${editLoteCertIds.includes(cert.id) ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
@@ -1932,6 +1933,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       {modalEnvasado && (
         <EnvasadoModal
           plantBatch={modalEnvasado}
+          order={orders.find(o => o.id === modalEnvasado.order_id)}
           kgPerQuintal={kgPerQuintal}
           webUser={webUser}
           onClose={() => setModalEnvasado(null)}

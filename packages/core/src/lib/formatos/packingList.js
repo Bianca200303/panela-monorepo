@@ -38,7 +38,7 @@ export async function fetchPackingListData(container) {
 }
 
 export function buildPrintHTMLPackingList(cooperative, container, orders, carga, pallets, people) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, orders[0])
   const coopName = cooperative?.name ?? ''
   const clientNames = [...new Set(orders.map(o => o.plant_clients?.name).filter(Boolean))].join(', ')
   const opNumbers = [...new Set(orders.map(o => o.client_order_number ?? o.order_code).filter(Boolean))].join(', ')
@@ -159,7 +159,7 @@ export function packingListPdf(cooperative, container, orders, carga, pallets, p
 }
 
 export function packingListExcel(cooperative, container, orders, carga, pallets, people) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, orders[0])
   const clientNames = [...new Set(orders.map(o => o.plant_clients?.name).filter(Boolean))].join(', ')
   const opNumbers = [...new Set(orders.map(o => o.client_order_number ?? o.order_code).filter(Boolean))].join(', ')
   const saleNumbers = [...new Set(orders.map(o => o.sale_number).filter(Boolean))].join(', ')

@@ -31,7 +31,7 @@ export async function fetchOrdenProduccionData(order, kgPerQuintal) {
 }
 
 export function buildPrintHTMLOrdenProduccion(cooperative, order, containerNumber, data, firmantes) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const { rows, certNames, kgPerQuintal } = data
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : '—'
   const hasPallets = cooperative?.features?.pallets
@@ -142,7 +142,7 @@ export function ordenProduccionPdf(cooperative, order, containerNumber, data, fi
 }
 
 export function ordenProduccionExcel(cooperative, order, containerNumber, { rows, certNames, kgPerQuintal }) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const totalKg = rows.reduce((s, r) => s + r.kg, 0)
   const hasPallets = cooperative?.features?.pallets

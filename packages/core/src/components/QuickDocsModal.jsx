@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import JSZip from 'jszip'
-import { quickDocFileName, docFileId } from '../lib/formatos/shared'
+import { quickDocFileName, docFileId, quickDocLabel } from '../lib/formatos/shared'
 import { generatePdfBlob, downloadBlob, downloadPdfDocument } from '../lib/pdfDownload'
 import { useCooperative } from '../lib/cooperativeContext'
 import { loteLabel, isOrderNacional } from '../lib/loteHelpers'
@@ -33,8 +33,8 @@ const CATEGORY_ORDER = ['bpm', 'hys', 'logistica']
 // apps/caes y apps/norandino).
 export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, initialDocKey, initialBatch, onClose, quickDocs }) {
   const COOPERATIVE = useCooperative()
-  const LOTE_LABEL = getLoteLabel(COOPERATIVE)
-  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
+  const LOTE_LABEL = getLoteLabel(COOPERATIVE, order)
+  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE, order)
   const QUICK_DOCS = quickDocs
   const [docKey, setDocKey] = useState(null)
   const [docData, setDocData] = useState(null)
@@ -164,14 +164,14 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
     const failed = []
     for (let i = 0; i < applicableDocs.length; i++) {
       const d = applicableDocs[i]
-      setBulkProgress({ current: i + 1, total: applicableDocs.length, label: d.label })
+      setBulkProgress({ current: i + 1, total: applicableDocs.length, label: quickDocLabel(d, order) })
       try {
         const data = await d.fetchData(order, kgPerQuintal)
         const html = d.buildPdfHtml(order, containerNumber, data, [])
         const blob = await generatePdfBlob(html)
         zip.file(`${quickDocFileName(d.key, order, containerNumber)}.pdf`, blob)
       } catch (err) {
-        failed.push(`${d.label} (${err.message})`)
+        failed.push(`${quickDocLabel(d, order)} (${err.message})`)
       }
     }
     if (Object.keys(zip.files).length > 0) {
@@ -226,7 +226,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
                           onClick={() => openDoc(d.key)}
                           disabled={bulkDownloading}
                         >
-                          {d.label}
+                          {quickDocLabel(d, order)}
                         </button>
                       ))}
                     </div>
@@ -239,7 +239,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
           {doc && pendingLoteDoc && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0 12px' }}>
-                <strong style={{ fontSize: 14 }}>{doc.label}</strong>
+                <strong style={{ fontSize: 14 }}>{quickDocLabel(doc, order)}</strong>
                 <button className="btn small outline" onClick={() => { setDocKey(null); setPendingLoteDoc(null) }}>‹ Volver</button>
               </div>
               <p className="muted small" style={{ margin: '0 0 10px' }}>Esta orden tiene {batches.length} {LOTE_LABEL_PLURAL_LOWER}. Seleccione cuál se está trazando.</p>
@@ -261,7 +261,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
           {doc && pendingTipoDoc && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0 12px' }}>
-                <strong style={{ fontSize: 14 }}>{doc.label}</strong>
+                <strong style={{ fontSize: 14 }}>{quickDocLabel(doc, order)}</strong>
                 <button className="btn small outline" onClick={() => { setDocKey(null); setPendingTipoDoc(null) }}>‹ Volver</button>
               </div>
 
@@ -279,7 +279,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
           {doc && !pendingLoteDoc && !pendingTipoDoc && !loading && docData && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '4px 0 12px' }}>
-                <strong style={{ fontSize: 14 }}>{doc.label}</strong>
+                <strong style={{ fontSize: 14 }}>{quickDocLabel(doc, order)}</strong>
                 <button className="btn small outline" onClick={() => { setDocKey(null); setDocData(null) }}>‹ Volver</button>
               </div>
 
@@ -321,7 +321,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
 
               {showPreview && (
                 <iframe
-                  title={doc.label}
+                  title={quickDocLabel(doc, order)}
                   srcDoc={doc.buildPdfHtml(order, containerNumber, docData, firmantes)}
                   style={{ width: '100%', height: 500, marginTop: 12, border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}
                 />

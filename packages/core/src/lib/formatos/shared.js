@@ -88,6 +88,13 @@ const QUICK_DOC_FILE_LABELS = {
   manejo_residuos_caes:           { number: null, title: 'MANEJO DE RESIDUOS' },
 }
 
+// El nombre de un documento puede depender de la orden (ej. CAES: "Control
+// de Calidad por Lote nacional/de exportación") -- en ese caso `label` es
+// una función (order) => string en vez de un texto fijo.
+export function quickDocLabel(doc, order) {
+  return typeof doc.label === 'function' ? doc.label(order) : doc.label
+}
+
 export function quickDocFileName(key, order, containerNumber) {
   const entry = QUICK_DOC_FILE_LABELS[key]
   const prefix = entry ? (entry.number ? `${entry.number}.- ${entry.title}` : entry.title) : key

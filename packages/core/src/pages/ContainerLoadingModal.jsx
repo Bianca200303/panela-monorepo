@@ -73,8 +73,8 @@ function ToggleYesNo({ value, onChange, badWhenTrue }) {
 
 export default function ContainerLoadingModal({ container, orders, webUser, onClose, onSaved }) {
   const COOPERATIVE = useCooperative()
-  const LOTE_LABEL = getLoteLabel(COOPERATIVE)
-  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
+  const LOTE_LABEL = getLoteLabel(COOPERATIVE, orders?.[0])
+  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, orders?.[0])
   const { confirm, dialog: confirmDialog } = useConfirm()
 
   const [loading, setLoading] = useState(true)

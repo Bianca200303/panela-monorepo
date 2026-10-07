@@ -17,7 +17,7 @@ export const COOPERATIVE = {
   logo: '/logos/caes.png',
   ruc: null,
   features: {
-    certificacion: false, loteLabel: 'Lote de exportación', bunqueLabel: 'Lote de producción', pallets: false, detectorMetales: false,
+    certificacion: false, loteLabel: 'Lote de envasado', loteLabelPorVenta: { exportacion: 'Lote de exportación', nacional: 'Lote nacional' }, bunqueLabel: 'Lote de producción', pallets: false, detectorMetales: false,
     limpiezaUnificada: true, cloroPreparacionMonitoreo: true, higieneGrillaMensual: true, plagasEventosMensuales: true,
     liberacionProductoTerminado: true, controlesPlantaCAES: true, ventaNacionalExportacion: true,
     personalCheckNote: 'Personal *: Revisar el correcto uso del uniforme; uñas y manos limpias; cabello limpio y recogido; sin joyas y accesorios; conducta adecuada; ni signos de enfermedad.',

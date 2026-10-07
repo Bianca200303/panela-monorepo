@@ -22,9 +22,9 @@ function defaultTurno() {
   return new Date().getHours() < 12 ? 'manana' : 'tarde'
 }
 
-export default function EnvasadoModal({ plantBatch, kgPerQuintal, webUser, onClose, onSaved }) {
+export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser, onClose, onSaved }) {
   const COOPERATIVE = useCooperative()
-  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
+  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, order)
   const BUNQUE_LABEL_PLURAL = getBunqueLabelPlural(COOPERATIVE)
   const isBolsa = plantBatch.packaging_type === 'bolsa'
   const isSaco = plantBatch.packaging_type === 'saco'

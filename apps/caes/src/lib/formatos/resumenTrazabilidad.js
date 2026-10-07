@@ -5,9 +5,6 @@ import { COOPERATIVE } from '../config'
 import { loteLabel, loteKg, packagingLabel } from '@panela/core/lib/loteHelpers'
 import { PRINT_STYLES, fmtDate, fmtNum, buildFirmasHTML, quickDocFileName, resolveContainerContext, escapeHtml } from '@panela/core/lib/formatos/shared'
 import { getLoteLabel, getLoteLabelLower } from '@panela/core/lib/labels'
-
-const LOTE_LABEL = getLoteLabel(COOPERATIVE)
-const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
 import { fetchRawMaterialInputsForOrder, fetchOrderCertNames } from '@panela/core/lib/formatos/registroTrazabilidad'
 import { fetchControlHigienePersonalCaesData, HYGIENE_CAES_TURNOS, HYGIENE_CAES_ITEMS } from './higienePersonalCaes'
 import { fetchControlVerificacionLimpiezaData } from '@panela/core/lib/formatos/verificacionLimpieza'
@@ -321,6 +318,8 @@ export async function fetchResumenTrazabilidadData(order, kgPerQuintal, selected
 export function buildPrintHTMLResumenTrazabilidad(order, containerNumber, data, firmantes) {
   const { batch, materiaPrima, materiaPrimaGuias, container, referencias, tipo, packingListNumero, transportControls, certNames, bloquesHigiene, controlAgua, tempHumedadAlmacen, despachoTemperaturaC, despachoHumedadPct } = data
   const esExportacion = tipo === 'exportacion'
+  const LOTE_LABEL = getLoteLabel(COOPERATIVE, { sale_type: tipo })
+  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, { sale_type: tipo })
   const clientName = escapeHtml(order?.plant_clients?.name) ?? '—'
   const certText = certNames?.length > 0 ? escapeHtml(certNames.join(' - ').toUpperCase()) : '—'
   const firmasHTML = buildFirmasHTML(firmantes)
@@ -587,6 +586,7 @@ export function resumenTrazabilidadPdf(order, containerNumber, data, firmantes) 
 export function resumenTrazabilidadExcel(order, containerNumber, data) {
   const { batch, materiaPrima, materiaPrimaGuias, container, referencias, tipo, packingListNumero, transportControls, certNames, bloquesHigiene, controlAgua, tempHumedadAlmacen, despachoTemperaturaC, despachoHumedadPct } = data
   const esExportacion = tipo === 'exportacion'
+  const LOTE_LABEL = getLoteLabel(COOPERATIVE, { sale_type: tipo })
   const aoa = [
     ['RESUMEN DE TRAZABILIDAD', esExportacion ? '(Exportación)' : '(Nacional)'],
     ['Cliente:', order?.plant_clients?.name ?? ''],

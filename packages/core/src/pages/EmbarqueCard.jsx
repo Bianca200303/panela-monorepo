@@ -11,8 +11,8 @@ import Icon from '../components/Icon'
 // "En contenedor" o "Despachos nacionales", donde vive ContainerCard.jsx.
 export default function EmbarqueCard({ order, onAsignar, onInforme, onReopen, onDocumentos, onReload }) {
   const COOPERATIVE = useCooperative()
-  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
-  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
+  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, order)
+  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE, order)
   const [open, setOpen] = useState(false)
   const [reopenError, setReopenError] = useState('')
   const { confirm, dialog: confirmDialog } = useConfirm()

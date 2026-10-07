@@ -61,7 +61,7 @@ function resultadoLabel(r) {
 }
 
 export function buildPrintHTMLControlCalidadLote(cooperative, order, containerNumber, data, firmantes) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const { rows, certNames } = data
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : '—'
   const formatTitle = getFormatTitleControlCalidadLote(cooperative)
@@ -140,7 +140,7 @@ export function controlCalidadLotePdf(cooperative, order, containerNumber, data,
 }
 
 export function controlCalidadLoteExcel(cooperative, order, containerNumber, { rows, certNames }) {
-  const LOTE_LABEL = getLoteLabel(cooperative)
+  const LOTE_LABEL = getLoteLabel(cooperative, order)
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const aoa = [
     [getFormatTitleControlCalidadLote(cooperative)],

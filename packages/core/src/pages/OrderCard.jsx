@@ -18,9 +18,9 @@ const BATCH_STATUS = {
 
 export default function OrderCard({ order, stockItems, processingLimits, kgPerQuintal, webUsersMap, onAddLote, onEditLote, onGestionarBunques, onGestionarEnvasado, onGestionarObjetosExtranos, onGestionarPesosSellado, onGestionarSelladoEnvasadoCaes, onGestionarHermeticidadCaes, onGestionarMonitoreoTamizadoCaes, onGestionarCalidad, onCloseLote, onComplete, onEditOrder, onDocumentos, onResumenTrazabilidad, onReload }) {
   const COOPERATIVE = useCooperative()
-  const LOTE_LABEL = getLoteLabel(COOPERATIVE)
-  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
-  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
+  const LOTE_LABEL = getLoteLabel(COOPERATIVE, order)
+  const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, order)
+  const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE, order)
   const BUNQUE_LABEL_LOWER = getBunqueLabelLower(COOPERATIVE)
   const BUNQUE_LABEL_PLURAL = getBunqueLabelPlural(COOPERATIVE)
   const BUNQUE_LABEL_PLURAL_LOWER = getBunqueLabelPluralLower(COOPERATIVE)
@@ -276,6 +276,7 @@ export default function OrderCard({ order, stockItems, processingLimits, kgPerQu
                     inputs={b.allocated_inputs ?? []}
                     stockItems={stockItems ?? []}
                     processing={b}
+                    order={order}
                   />
                 ))}
 
