@@ -7,6 +7,7 @@ import Icon from '../components/Icon'
 import { PACKAGING_TYPE_LABELS } from '../lib/loteHelpers'
 import { getLoteLabelLower, getLoteLabelPluralLower, getBunqueLabelPluralLower } from '../lib/labels'
 import { useConfirm } from '../hooks/useConfirm'
+import { useAuthStore } from '../store/authStore'
 
 // Gestión de catálogos de planta: clientes, marcas, productos (SKU/CODPROD)
 // y los valores predeterminados de presentación por cliente. Son datos que
@@ -18,17 +19,42 @@ import { useConfirm } from '../hooks/useConfirm'
 // "Valores predeterminados" va separado de "Clientes" a propósito: son dos
 // cosas distintas -- uno es la identidad del cliente (nombre/correlativo),
 // el otro es una sugerencia editable de presentación que no todos los
-// clientes tienen. Más adelante se puede sumar aquí trabajadores certificados
-// y cupos por productor (hoy todavía solo por SQL).
+// clientes tienen. Más adelante se puede sumar aquí cupos por productor (hoy
+// todavía solo por SQL).
 
 const emptyFormCliente = { name: '', code: '' }
 const emptyFormDefaults = { client_id: '', default_packaging_type: '', default_units_per_box: '', default_packaging_kg: '', default_pallet_count: '' }
 const emptyFormProducto = { code: '', description: '', client_id: '', brand_id: '', packaging_type: 'bolsa', packaging_kg: '' }
 const emptyFormPersonal = { first_name: '', last_name: '' }
 const emptyFormCampaign = { year: '', start_date: '', end_date: '' }
+const emptyFormWorker = { first_name: '', last_name: '', coop_module_id: '', dni: '', position: '', certified_since: '', certified_until: '', notes: '' }
+
+// Días de anticipación para avisar "Por vencer" en la certificación.
+const CERT_WARNING_DAYS = 30
+
+const toLocalIsoDate = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+// Estado de la certificación según certified_until. Es solo una advertencia:
+// un trabajador vencido sigue apareciendo en el desplegable del móvil (se
+// regulariza después, no se frena la producción). Sin fecha = no vence.
+function getCertStatus(certifiedUntil) {
+  if (!certifiedUntil) return null
+  const limit = new Date()
+  limit.setDate(limit.getDate() + CERT_WARNING_DAYS)
+  if (certifiedUntil < toLocalIsoDate(new Date())) return 'vencida'
+  if (certifiedUntil <= toLocalIsoDate(limit)) return 'por_vencer'
+  return null
+}
+
+const formatIsoDate = (iso) => (iso ? iso.split('-').reverse().join('/') : '')
 
 export default function CatalogosPage() {
   const COOPERATIVE = useCooperative()
+  const { webUser } = useAuthStore()
+  // Solo el Administrador mantiene la lista de trabajadores certificados (la
+  // BD también lo exige, ver migración 20261012120000).
+  const isAdmin = webUser?.role === 'admin_web'
   const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
   const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE)
   const BUNQUE_LABEL_PLURAL_LOWER = getBunqueLabelPluralLower(COOPERATIVE)
@@ -39,10 +65,13 @@ export default function CatalogosPage() {
   const [certifications, setCertifications] = useState([])
   const [personnel, setPersonnel] = useState([])
   const [campaigns, setCampaigns] = useState([])
+  const [workers, setWorkers] = useState([])
+  const [modules, setModules] = useState([])
+  const [workerModuleFilter, setWorkerModuleFilter] = useState('')
 
   // Cada sección se despliega por separado -- todas arrancan cerradas para
   // no abrumar con las 7 listas a la vez; se abre solo la que hace falta.
-  const [expanded, setExpanded] = useState({ clientes: false, defaults: false, marcas: false, productos: false, certificaciones: false, personal: false, campanas: false })
+  const [expanded, setExpanded] = useState({ clientes: false, defaults: false, marcas: false, productos: false, certificaciones: false, personal: false, trabajadores: false, campanas: false })
   const toggleSection = (key) => setExpanded(e => ({ ...e, [key]: !e[key] }))
   const { confirm, dialog: confirmDialog } = useConfirm()
 
@@ -81,6 +110,12 @@ export default function CatalogosPage() {
   const [personalError, setPersonalError]         = useState('')
   const [savingPersonal, setSavingPersonal]       = useState(false)
 
+  const [modalWorker, setModalWorker]         = useState(false)
+  const [formWorker, setFormWorker]           = useState(emptyFormWorker)
+  const [editingWorkerId, setEditingWorkerId] = useState(null)
+  const [workerError, setWorkerError]         = useState('')
+  const [savingWorker, setSavingWorker]       = useState(false)
+
   const [modalCampaign, setModalCampaign]     = useState(false)
   const [formCampaign, setFormCampaign]       = useState(emptyFormCampaign)
   const [campaignError, setCampaignError]     = useState('')
@@ -90,7 +125,7 @@ export default function CatalogosPage() {
 
   const loadAll = async () => {
     setLoading(true)
-    await Promise.all([loadClients(), loadBrands(), loadProducts(), loadCertifications(), loadPersonnel(), loadCampaigns()])
+    await Promise.all([loadClients(), loadBrands(), loadProducts(), loadCertifications(), loadPersonnel(), loadWorkers(), loadModules(), loadCampaigns()])
     setLoading(false)
   }
 
@@ -138,6 +173,25 @@ export default function CatalogosPage() {
       .eq('cooperative_id', COOPERATIVE.id)
       .order('first_name')
       .then(({ data }) => setPersonnel(data ?? []))
+
+  // Trabajadores certificados por módulo de campo -- alimentan el desplegable
+  // "Nombre y Apellidos" del Control de personal operario en el móvil
+  // (CertifiedWorkersService). Distinto de plant_personnel, que es la planta.
+  const loadWorkers = () =>
+    supabase
+      .from('certified_workers')
+      .select('id, first_name, last_name, coop_module_id, dni, position, certified_since, certified_until, notes, is_active')
+      .eq('cooperative_id', COOPERATIVE.id)
+      .order('last_name')
+      .then(({ data }) => setWorkers(data ?? []))
+
+  const loadModules = () =>
+    supabase
+      .from('coop_modules')
+      .select('id, name')
+      .eq('cooperative_id', COOPERATIVE.id)
+      .order('name')
+      .then(({ data }) => setModules(data ?? []))
 
   // Campaña productiva -- ver BunquesPage.jsx, la sugerencia automática de
   // N° de bunque se acota a la campaña activa. Solo puede haber una activa
@@ -433,6 +487,83 @@ export default function CatalogosPage() {
     loadPersonnel()
   }
 
+  // ── Trabajadores certificados ───────────────────────────────────────────
+
+  const openNewWorker = () => {
+    setWorkerError('')
+    setEditingWorkerId(null)
+    // Si hay un módulo filtrado, el alta arranca en ese módulo.
+    setFormWorker({ ...emptyFormWorker, coop_module_id: workerModuleFilter })
+    setModalWorker(true)
+  }
+
+  const openEditWorker = (w) => {
+    setWorkerError('')
+    setEditingWorkerId(w.id)
+    setFormWorker({
+      first_name: w.first_name ?? '',
+      last_name: w.last_name ?? '',
+      coop_module_id: w.coop_module_id ?? '',
+      dni: w.dni ?? '',
+      position: w.position ?? '',
+      certified_since: w.certified_since ?? '',
+      certified_until: w.certified_until ?? '',
+      notes: w.notes ?? '',
+    })
+    setModalWorker(true)
+  }
+
+  const handleSaveWorker = async () => {
+    setWorkerError('')
+    if (!formWorker.first_name.trim() || !formWorker.last_name.trim() || !formWorker.coop_module_id) {
+      setWorkerError('Nombre, apellido y módulo son obligatorios')
+      return
+    }
+    const dni = formWorker.dni.trim()
+    if (dni && !/^\d{8}$/.test(dni)) {
+      setWorkerError('El DNI debe tener 8 dígitos')
+      return
+    }
+    if (formWorker.certified_since && formWorker.certified_until && formWorker.certified_until < formWorker.certified_since) {
+      setWorkerError('"Certificado hasta" no puede ser anterior a "Certificado desde"')
+      return
+    }
+    setSavingWorker(true)
+    try {
+      const payload = {
+        first_name: formWorker.first_name.trim(),
+        last_name: formWorker.last_name.trim(),
+        coop_module_id: formWorker.coop_module_id,
+        dni: dni || null,
+        position: formWorker.position.trim() || null,
+        certified_since: formWorker.certified_since || null,
+        certified_until: formWorker.certified_until || null,
+        notes: formWorker.notes.trim() || null,
+      }
+      if (editingWorkerId) {
+        const { error: updErr } = await supabase.from('certified_workers').update(payload).eq('id', editingWorkerId)
+        if (updErr) throw updErr
+      } else {
+        const { error: insErr } = await supabase.from('certified_workers').insert({ ...payload, cooperative_id: COOPERATIVE.id })
+        if (insErr) throw insErr
+      }
+      setModalWorker(false)
+      setEditingWorkerId(null)
+      setFormWorker(emptyFormWorker)
+      loadWorkers()
+    } catch (err) {
+      // idx_cw_unique_dni_per_module: mismo DNI dos veces en el mismo módulo.
+      setWorkerError(err.code === '23505' ? 'Ya existe un trabajador con ese DNI en este módulo' : err.message)
+    } finally {
+      setSavingWorker(false)
+    }
+  }
+
+  const handleToggleWorkerActive = async (w) => {
+    await supabase.from('certified_workers').update({ is_active: !w.is_active }).eq('id', w.id)
+    loadWorkers()
+  }
+
   // ── Campañas ─────────────────────────────────────────────────────────────
 
   const openNewCampaign = () => {
@@ -524,7 +655,7 @@ export default function CatalogosPage() {
     <div>
       <h2 style={{ margin: '0 0 4px' }}>Catálogos</h2>
       <p className="muted small" style={{ margin: '0 0 16px' }}>
-        Clientes, marcas, productos, certificaciones y personal de planta — se pueden crear, editar o dar de baja aquí,
+        Clientes, marcas, productos, certificaciones, personal de planta y trabajadores certificados — se pueden crear, editar o dar de baja aquí,
         sin borrar el historial de lo que ya se usó en órdenes. Más adelante se suman más catálogos a esta sección.
       </p>
 
@@ -775,6 +906,84 @@ export default function CatalogosPage() {
             </div>
           )
         )}
+      </div>
+
+      {/* ── Trabajadores certificados (módulos de campo) ── */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: expanded.trabajadores ? 10 : 0 }}>
+          <button
+            className="btn small outline"
+            onClick={() => toggleSection('trabajadores')}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', padding: 0, background: 'none' }}
+          >
+            <Icon name={expanded.trabajadores ? 'chevronUp' : 'chevronDown'} size={16} />
+            <h3 style={{ margin: 0 }}>Trabajadores certificados <span className="muted small">({workers.length})</span></h3>
+          </button>
+          {isAdmin && <button className="btn small primary" onClick={openNewWorker}>+ Nuevo</button>}
+        </div>
+        <p className="muted small" style={{ margin: expanded.trabajadores ? '0 0 10px' : 0 }}>
+          Por módulo, para el desplegable "Nombre y Apellidos" del Control de personal operario (app móvil). Una certificación
+          vencida solo se advierte — el trabajador sigue disponible en el celular hasta que se regularice.
+          {!isAdmin && ' Solo el Administrador puede modificar esta lista.'}
+        </p>
+        {expanded.trabajadores && (() => {
+          const moduleName = (id) => modules.find(m => m.id === id)?.name ?? '—'
+          const visibleWorkers = workerModuleFilter
+            ? workers.filter(w => w.coop_module_id === workerModuleFilter)
+            : workers
+          return (
+            <>
+              <div className="field" style={{ margin: '0 0 10px', maxWidth: 280 }}>
+                <label>Módulo</label>
+                <select value={workerModuleFilter} onChange={e => setWorkerModuleFilter(e.target.value)}>
+                  <option value="">Todos los módulos</option>
+                  {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </div>
+              {visibleWorkers.length === 0 ? (
+                <EmptyState message="Todavía no hay trabajadores certificados en este módulo." />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {visibleWorkers.map(w => {
+                    const status = getCertStatus(w.certified_until)
+                    return (
+                      <div key={w.id} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                        padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8,
+                        opacity: w.is_active ? 1 : 0.6,
+                      }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <strong>{w.first_name} {w.last_name}</strong>
+                            {status === 'vencida' && <span className="tag error-tag">Vencida</span>}
+                            {status === 'por_vencer' && <span className="tag warn">Por vencer</span>}
+                            {!w.is_active && <span className="tag">Inactivo</span>}
+                          </span>
+                          <span className="muted small">
+                            {[
+                              !workerModuleFilter && moduleName(w.coop_module_id),
+                              w.position,
+                              w.dni && `DNI ${w.dni}`,
+                              w.certified_until && `Certificado hasta ${formatIsoDate(w.certified_until)}`,
+                            ].filter(Boolean).join(' · ')}
+                          </span>
+                        </div>
+                        {isAdmin && (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button className="btn small primary" onClick={() => openEditWorker(w)}>Editar</button>
+                            <button className="btn small warning" onClick={() => handleToggleWorkerActive(w)}>
+                              {w.is_active ? 'Desactivar' : 'Activar'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )
+        })()}
       </div>
 
       {/* ── Campañas ── */}
@@ -1115,6 +1324,99 @@ export default function CatalogosPage() {
               <button className="btn small" onClick={() => { setModalPersonal(false); setPersonalError(''); setEditingPersonalId(null) }} disabled={savingPersonal}>Cancelar</button>
               <button className="btn small primary" onClick={handleSavePersonal} disabled={savingPersonal}>
                 {savingPersonal ? 'Guardando...' : editingPersonalId ? 'Guardar cambios' : 'Crear personal'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Nuevo/Editar trabajador certificado ── */}
+      {modalWorker && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-body">
+              <h3 style={{ margin: '0 0 16px' }}>{editingWorkerId ? 'Editar trabajador certificado' : 'Nuevo trabajador certificado'}</h3>
+              <div className="grid two" style={{ gap: 8 }}>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Nombre *</label>
+                  <input
+                    type="text"
+                    value={formWorker.first_name}
+                    onChange={e => setFormWorker({ ...formWorker, first_name: e.target.value })}
+                  />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Apellidos *</label>
+                  <input
+                    type="text"
+                    value={formWorker.last_name}
+                    onChange={e => setFormWorker({ ...formWorker, last_name: e.target.value })}
+                  />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Módulo *</label>
+                  <select
+                    value={formWorker.coop_module_id}
+                    onChange={e => setFormWorker({ ...formWorker, coop_module_id: e.target.value })}
+                  >
+                    <option value="">Seleccione un módulo</option>
+                    {modules.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>DNI</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={8}
+                    value={formWorker.dni}
+                    onChange={e => setFormWorker({ ...formWorker, dni: e.target.value.replace(/\D/g, '') })}
+                  />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Cargo</label>
+                  <input
+                    type="text"
+                    placeholder="Ej: Operario de módulo"
+                    value={formWorker.position}
+                    onChange={e => setFormWorker({ ...formWorker, position: e.target.value })}
+                  />
+                </div>
+                <div />
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Certificado desde</label>
+                  <input
+                    type="date"
+                    value={formWorker.certified_since}
+                    onChange={e => setFormWorker({ ...formWorker, certified_since: e.target.value })}
+                  />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Certificado hasta</label>
+                  <input
+                    type="date"
+                    value={formWorker.certified_until}
+                    onChange={e => setFormWorker({ ...formWorker, certified_until: e.target.value })}
+                  />
+                </div>
+              </div>
+              <p className="muted small" style={{ margin: '6px 0 0' }}>
+                Si "Certificado hasta" queda vacío, la certificación no vence.
+              </p>
+              <div className="field" style={{ margin: '8px 0 0' }}>
+                <label>Notas</label>
+                <textarea
+                  rows={2}
+                  value={formWorker.notes}
+                  onChange={e => setFormWorker({ ...formWorker, notes: e.target.value })}
+                />
+              </div>
+              {workerError && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{workerError}</p>}
+            </div>
+            <div className="modal-actions">
+              <button className="btn small" onClick={() => { setModalWorker(false); setWorkerError(''); setEditingWorkerId(null) }} disabled={savingWorker}>Cancelar</button>
+              <button className="btn small primary" onClick={handleSaveWorker} disabled={savingWorker}>
+                {savingWorker ? 'Guardando...' : editingWorkerId ? 'Guardar cambios' : 'Crear trabajador'}
               </button>
             </div>
           </div>
