@@ -106,7 +106,7 @@ export default function LoginPage() {
             </div>
           </div>
           {error && (
-            <p style={{ color: '#dc2626', fontSize: 14, margin: '0 0 12px' }}>{error}</p>
+            <p style={{ color: 'var(--danger)', fontSize: 14, margin: '0 0 12px' }}>{error}</p>
           )}
           <button
             type="submit"

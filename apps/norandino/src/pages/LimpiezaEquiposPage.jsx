@@ -1,8 +1,10 @@
 import { useState, useEffect, Fragment } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { useGridControl } from '@panela/core/hooks/useGridControl'
 import { loadEquipmentCleaningAreas, EQUIPMENT_CLEANING_PRODUCT_CODES, EQUIPMENT_CLEANING_PRODUCT_LABELS } from '../lib/formatos/limpiezaEquipos'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
 
 // Control del Programa de Limpieza y Sanitización de Equipos - Utensilios
 // (SIG-GIA-RG-003) -- registro MENSUAL, independiente de cualquier
@@ -30,8 +32,8 @@ function nextStatus(current) {
 }
 
 function cellStyle(status) {
-  if (status === 'correcto') return { color: '#166534', background: '#f0fdf4' }
-  if (status === 'no_correcto') return { color: '#991b1b', background: '#fef2f2' }
+  if (status === 'correcto') return { color: 'var(--success-text)', background: 'var(--success-bg)' }
+  if (status === 'no_correcto') return { color: 'var(--danger-text)', background: 'var(--danger-bg-soft)' }
   return { color: '#ccc', background: '#fff' }
 }
 
@@ -75,7 +77,7 @@ export default function LimpiezaEquiposPage() {
   useEffect(() => { loadEquipmentCleaningAreas().then(setAreas) }, [])
 
   const {
-    view, setView, controls, loadingHistory,
+    view, setView, controls, loadingHistory, historyError, reload: reloadHistory,
     editingId, header, updateHeader, updateIdentity,
     cellValue, setCellValue,
     saving, error,
@@ -83,7 +85,7 @@ export default function LimpiezaEquiposPage() {
   } = useGridControl({
     table: 'plant_equipment_cleaning_controls',
     childTable: 'plant_equipment_cleaning_checks',
-    historySelect: 'id, year, month, responsible_person, observations, plant_equipment_cleaning_checks ( status ), registered_by:web_users!pecc_created_by_fkey ( first_name, last_name )',
+    historySelect: 'id, year, month, responsible_person, observations, plant_equipment_cleaning_checks ( status ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pecc_created_by_fkey ( first_name, last_name )',
     historyOrder: [{ column: 'year', ascending: false }, { column: 'month', ascending: false }],
     emptyHeader: () => {
       const now = new Date()
@@ -175,6 +177,8 @@ export default function LimpiezaEquiposPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={reloadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de limpieza de equipos registrados aún." />
         ) : (
@@ -194,7 +198,7 @@ export default function LimpiezaEquiposPage() {
                   </div>
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     Responsable: {c.responsible_person ?? '—'}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                   {c.observations && <div className="meta" style={{ fontSize: 12 }}>Observaciones: {c.observations}</div>}
                 </div>
@@ -217,11 +221,6 @@ export default function LimpiezaEquiposPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            Mes y año identifican a este control ya guardado y no se pueden cambiar aquí. Para otro período, vuelva al historial y use "Editar" o "+ Nuevo control".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Mes</label>
@@ -260,7 +259,7 @@ export default function LimpiezaEquiposPage() {
               {areas.map(({ area, items }) => (
                 <Fragment key={area}>
                   <tr>
-                    <td colSpan={days.length + 1} style={{ background: '#f3f4f6', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
+                    <td colSpan={days.length + 1} style={{ background: 'var(--surface-sunken)', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
                   </tr>
                   {items.map(item => (
                     <tr key={`${area}-${item.code}`}>
@@ -295,7 +294,7 @@ export default function LimpiezaEquiposPage() {
         </div>
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

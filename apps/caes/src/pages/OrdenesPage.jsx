@@ -4,8 +4,11 @@ import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
 import { loadFormConfigs, loadProcessingLimits, loadKgPerQuintal } from '@panela/core/lib/formConfig'
 import DynamicForm from '@panela/core/components/DynamicForm'
-import { loteLabel, BUNQUE_ALLOCATIONS_SELECT, PACKAGING_TYPE_LABELS } from '@panela/core/lib/loteHelpers'
-import { getLoteLabelLower, getLoteLabelPluralLower } from '@panela/core/lib/labels'
+import { toast } from '@panela/core/lib/toast'
+import { trackAction } from '@panela/core/lib/usage'
+import { AUDIT_COLUMNS } from '@panela/core/lib/audit'
+import { loteLabel, BUNQUE_ALLOCATIONS_SELECT, PACKAGING_TYPE_LABELS, isOrderNacional } from '@panela/core/lib/loteHelpers'
+import { getLoteLabel, getLoteLabelLower, getLoteLabelPluralLower } from '@panela/core/lib/labels'
 import { useNavigate } from 'react-router-dom'
 
 const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE)
@@ -17,13 +20,17 @@ import MonitoreoTamizadoCaesModal from './MonitoreoTamizadoCaesModal'
 import Stat from '@panela/core/components/Stat'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
 import Icon from '@panela/core/components/Icon'
+import LoteStockNotice from '@panela/core/components/LoteStockNotice'
 import SearchFilterBar from '@panela/core/components/SearchFilterBar'
 import DateInput from '@panela/core/components/DateInput'
 import QuickDocsModal from '@panela/core/components/QuickDocsModal'
 import OrderNumberField from '@panela/core/components/OrderNumberField'
+import { checkDuplicateOrderNumber, orderSaveErrorMessage, useDuplicateOrderNumber } from '@panela/core/lib/orderNumber'
+import { orderDateSequenceError, orderDatesBeforeReceptionError, fetchOrderLatestReceptionDate } from '@panela/core/lib/orderDates'
 import OrderCard from '@panela/core/pages/OrderCard'
-import { QUICK_DOCS } from '../lib/formatos'
+import { QUICK_DOCS, FIELD_DOCS } from '../lib/formatos'
 
 const STOCK_PAGE_SIZE = 30
 
@@ -64,6 +71,10 @@ export default function OrdenesPage() {
   // registró envasado/calidad -- sin FK a web_users, se resuelve aparte.
   const [webUsersMap, setWebUsersMap]     = useState({})
   const [loading, setLoading]             = useState(true)
+  const [loadError, setLoadError]         = useState('')
+  // Sube al cerrar el modal de un control por lote: OrderCard vuelve a
+  // consultar el estado de sus controles (✓ / sin registro).
+  const [controlsVersion, setControlsVersion] = useState(0)
   const [brandCatalog, setBrandCatalog]                 = useState([]) // desde plant_brand_catalog (id, label, is_active)
   const [clients, setClients]                          = useState([]) // desde plant_clients
   const [products, setProducts]                        = useState([]) // desde plant_product_catalog
@@ -81,7 +92,7 @@ export default function OrdenesPage() {
 
   // Modal: nuevo producto (alta rápida desde "Agregar lote de planta") --
   // igual que cliente, la gestión completa vive en "Catálogos".
-  const emptyFormProducto = { code: '', description: '', client_id: '', brand_id: '', packaging_type: 'bolsa', packaging_kg: '' }
+  const emptyFormProducto = { code: '', description: '', brand_id: '', packaging_type: 'bolsa', packaging_kg: '' }
   const [modalProducto, setModalProducto]   = useState(false)
   const [formProducto, setFormProducto]     = useState(emptyFormProducto)
   const [productoError, setProductoError]   = useState('')
@@ -106,6 +117,11 @@ export default function OrdenesPage() {
   // Modal: editar orden (ajustar carga total, mercado, etc. de una orden ya creada)
   const [modalEditOrden, setModalEditOrden] = useState(null) // order
   const [formEditOrden,  setFormEditOrden]  = useState(emptyFormOrden)
+  // Aviso de fechas del flujo inválidas, debajo de las fechas.
+  const [orderDatesError, setOrderDatesError] = useState('')
+  // Aviso de N° de orden repetido, directo debajo del campo mientras se escribe.
+  const [dupCreateMsg, setDupCreateMsg] = useDuplicateOrderNumber({ cooperativeId: COOPERATIVE.id, number: formOrden.client_order_number, enabled: !!modalOrden })
+  const [dupEditMsg, setDupEditMsg] = useDuplicateOrderNumber({ cooperativeId: COOPERATIVE.id, number: formEditOrden.client_order_number, excludeOrderId: modalEditOrden?.id ?? null, enabled: !!modalEditOrden })
 
   // Modal: nuevo lote de planta
   const emptyFormLote = {
@@ -168,11 +184,11 @@ export default function OrdenesPage() {
       .order('name')
       .then(({ data }) => setAvailableCerts(data ?? []))
     // Cargar configs dinámicamente
-    loadFormConfigs(['shelf_life_config']).then(configs => {
+    loadFormConfigs(COOPERATIVE, ['shelf_life_config']).then(configs => {
       setShelfLifeConfig(configs.shelf_life_config ?? [])
     })
-    loadProcessingLimits().then(setProcessingLimits)
-    loadKgPerQuintal().then(setKgPerQuintal)
+    loadProcessingLimits(COOPERATIVE).then(setProcessingLimits)
+    loadKgPerQuintal(COOPERATIVE).then(setKgPerQuintal)
     loadBrands()
     loadClients()
     loadProducts()
@@ -248,23 +264,26 @@ export default function OrdenesPage() {
         .insert({
           code:            formProducto.code.trim(),
           description:     formProducto.description.trim(),
-          client_id:       formProducto.client_id || null,
           brand_id:        formProducto.brand_id || null,
           packaging_type:  formProducto.packaging_type || null,
           packaging_kg:    formProducto.packaging_kg ? parseFloat(formProducto.packaging_kg) : null,
           cooperative_id:  COOPERATIVE.id,
         })
-        .select('id')
+        .select('id, code, description, client_id, brand_id, packaging_type, packaging_kg, is_active')
         .single()
       if (insErr) throw new Error(insErr.message)
       setModalProducto(false)
       setFormProducto(emptyFormProducto)
+      // Se agrega ya a la lista local: loadProducts() es asíncrono y, si se
+      // esperara a que termine, el lote se armaría con la lista vieja (sin
+      // el producto nuevo) y quedaría sin marca ni envase.
+      setProducts(prev => [...prev.filter(p => p.id !== data.id), data])
       loadProducts()
       // Selecciona automáticamente el producto recién creado en el lote que se
       // está armando (nuevo lote o edición de uno existente, el que esté
       // abierto en ese momento).
-      if (modalEditLote) applyProductToLoteForm(setFormEditLote, data.id)
-      else if (modalLote) applyProductToLoteForm(setFormLote, data.id)
+      if (modalEditLote) applyProductToLoteForm(setFormEditLote, data.id, data)
+      else if (modalLote) applyProductToLoteForm(setFormLote, data.id, data)
     } catch (err) {
       setProductoError(err.message)
     } finally {
@@ -328,16 +347,9 @@ export default function OrdenesPage() {
     loadProducts()
   }
 
-  // Productos activos para elegir al armar un lote. Con cliente elegido en
-  // la orden, se acota estrictamente a los productos de ESE cliente (nunca
-  // los genéricos ni los de otro cliente) -- son el catálogo cerrado de ese
-  // cliente. Sin cliente elegido en la orden, se ven todos (incluye los
-  // genéricos), porque ahí no hay ningún cliente contra el cual acotar.
-  const productsForSelect = (clientId) => {
-    const active = products.filter(p => p.is_active)
-    if (!clientId) return active
-    return active.filter(p => p.client_id === clientId)
-  }
+  // Productos activos para elegir al armar un lote. El producto no está
+  // amarrado a un cliente: cualquier producto sirve para cualquier orden.
+  const productsForSelect = () => products.filter(p => p.is_active)
 
   // Sugerencias de marca para el campo de texto del lote (input + datalist,
   // sigue siendo editable a mano). La marca depende del producto elegido, no
@@ -393,8 +405,10 @@ export default function OrdenesPage() {
 
   // Aplica los valores de un producto del catálogo elegido en el formulario
   // de lote (Agregar o Editar) -- pisa tipo/kg de empaque, nunca boxes/pallet.
-  const applyProductToLoteForm = (setter, productId) => {
-    const p = products.find(pr => pr.id === productId)
+  // [product]: el producto ya leído, cuando todavía no está en `products`
+  // (recién creado desde "Nuevo producto").
+  const applyProductToLoteForm = (setter, productId, product = null) => {
+    const p = product ?? products.find(pr => pr.id === productId)
     const brandLabel = p?.brand_id ? brandCatalog.find(b => b.id === p.brand_id)?.label : null
     setter(f => ({
       ...f,
@@ -426,12 +440,12 @@ export default function OrdenesPage() {
       supabase
         .from('plant_orders')
         .select(`
-          id, order_code, market, total_kg, status, notes, created_at, container_id, sale_number, sale_type,
+          id, order_code, market, total_kg, status, notes, created_at, container_id, sale_number, sale_type, ${AUDIT_COLUMNS},
           product, client_id, client_order_number, internal_container_number,
           tamizado_fecha_inicio, tamizado_fecha_fin, envasado_fecha_inicio, envasado_fecha_fin, fecha_envio,
           plant_clients ( id, name, code ),
           plant_production_batches (
-            id, order_id, batch_code, brand, client_batch_number, boxes_count, packaging_type, packaging_count, packaging_kg,
+            id, order_id, batch_code, brand, client_batch_number, boxes_count, packaging_type, packaging_count, packaging_kg, ${AUDIT_COLUMNS},
             product_catalog_id,
             plant_product_catalog ( description ),
             status, notes, description, best_before_date, pallet_count, tamizada_kg,
@@ -458,6 +472,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         .order('received_at', { ascending: false }),
     ])
 
+    // Si falla la consulta principal se avisa y se conserva lo que ya estaba
+    // en pantalla -- antes se veía como "No hay órdenes en proceso".
+    if (ordersRes.error) {
+      setLoadError(ordersRes.error.message)
+      setLoading(false)
+      return
+    }
+    setLoadError('')
     const ordersArr = ordersRes.data ?? []
     const stockArr = stockRes.data ?? []
 
@@ -511,7 +533,12 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       return
     }
     setSaving(true)
+    setOrderDatesError('')
+    const seqErr = orderDateSequenceError(formOrden)
+    if (seqErr) { setOrderDatesError(seqErr); setSaving(false); return }
     try {
+      const dupMsg = await checkDuplicateOrderNumber({ cooperativeId: COOPERATIVE.id, number: formOrden.client_order_number })
+      if (dupMsg) { setDupCreateMsg(dupMsg); return }
       const order_code = await generateOrderCode()
 
       // Sin contenedor todavía -- normalmente no se conoce hasta más
@@ -542,9 +569,11 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           cooperative_id: COOPERATIVE.id,
           created_by:     webUser.id,
         })
-      if (insErr) throw new Error(insErr.message)
+      if (insErr) throw new Error(orderSaveErrorMessage(insErr, formOrden.client_order_number))
       setModalOrden(false)
       setFormOrden(emptyFormOrden)
+      toast.success('Orden creada')
+      trackAction('crear_orden')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -557,6 +586,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
 
   const openEditOrder = (order) => {
     setError('')
+    setOrderDatesError('')
     setModalEditOrden(order)
     setFormEditOrden({
       market:                order.market ?? '',
@@ -587,7 +617,17 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       return
     }
     setSaving(true)
+    setOrderDatesError('')
+    const seqErrEdit = orderDateSequenceError(formEditOrden)
+    if (seqErrEdit) { setOrderDatesError(seqErrEdit); setSaving(false); return }
     try {
+      const dupMsg = await checkDuplicateOrderNumber({ cooperativeId: COOPERATIVE.id, number: formEditOrden.client_order_number, excludeOrderId: modalEditOrden.id })
+      if (dupMsg) { setDupEditMsg(dupMsg); return }
+      // Las fechas no pueden ser anteriores a la recepción de la materia
+      // prima que ya usa la orden (si todavía no tiene, no hay contra qué comparar).
+      const receptionDate = await fetchOrderLatestReceptionDate(modalEditOrden.id)
+      const recErr = orderDatesBeforeReceptionError(formEditOrden, receptionDate)
+      if (recErr) { setOrderDatesError(recErr); return }
       const { error: updErr } = await supabase
         .from('plant_orders')
         .update({
@@ -605,8 +645,9 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           envasado_fecha_fin:     formEditOrden.envasado_fecha_fin || null,
         })
         .eq('id', modalEditOrden.id)
-      if (updErr) throw new Error(updErr.message)
+      if (updErr) throw new Error(orderSaveErrorMessage(updErr, formEditOrden.client_order_number))
       setModalEditOrden(null)
+      toast.success('Orden actualizada')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -624,8 +665,10 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       setError('Debe elegir un producto del catálogo')
       return
     }
-    if (!brand.trim() || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
-      setError(`Marca, número de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalLote))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
+    // Marca: opcional en venta nacional, obligatoria en exportación.
+    const brandRequired = !isOrderNacional(COOPERATIVE, orders.find(o => o.id === modalLote))
+    if ((brandRequired && !brand.trim()) || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
+      setError(`${brandRequired ? 'Marca, n' : 'N'}úmero de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalLote))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
       return
     }
     const pCount = parseInt(packaging_count)
@@ -648,7 +691,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         .insert({
           batch_code,
           order_id:              modalLote,
-          brand:                 brand.trim(),
+          brand:                 brand.trim() || null,
           client_batch_number:   formLote.client_batch_number.trim() || null,
           boxes_count:           boxesCount,
           packaging_type,
@@ -681,6 +724,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       setLoteCertIds([])
       setAssignBrandToProduct(false)
       setAutoBoxesCount('')
+      toast.success(`${getLoteLabel(COOPERATIVE, orders.find(o => o.id === modalLote))} agregado`)
+      trackAction('crear_lote')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -722,8 +767,10 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       setError('Debe elegir un producto del catálogo')
       return
     }
-    if (!brand.trim() || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
-      setError(`Marca, número de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalEditLote.order_id))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
+    // Marca: opcional en venta nacional, obligatoria en exportación.
+    const brandRequired = !isOrderNacional(COOPERATIVE, orders.find(o => o.id === modalEditLote.order_id))
+    if ((brandRequired && !brand.trim()) || !client_batch_number.trim() || !packaging_type || !packaging_count || !packaging_kg) {
+      setError(`${brandRequired ? 'Marca, n' : 'N'}úmero de ${getLoteLabelLower(COOPERATIVE, orders.find(o => o.id === modalEditLote.order_id))}, tipo de empaque, cantidad y kg por unidad son obligatorios`)
       return
     }
     const pCount = parseInt(packaging_count)
@@ -742,7 +789,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       const { error: updErr } = await supabase
         .from('plant_production_batches')
         .update({
-          brand:                brand.trim(),
+          brand:                brand.trim() || null,
           client_batch_number:  client_batch_number.trim() || null,
           boxes_count:          boxesCount,
           packaging_type,
@@ -772,6 +819,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       }
       setModalEditLote(null)
       setEditAssignBrandToProduct(false)
+      toast.success('Cambios guardados')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -783,11 +831,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
   // ── Cerrar lote (fin de tamizado) ────────────────────────────────────────────
   // Decisión manual del usuario: no hay condición automática de kg alcanzado.
 
+  // Lanza el error para que OrderCard lo muestre (antes fallaba en silencio).
   const handleCloseLote = async (plantBatch) => {
-    await supabase
+    const { error: updErr } = await supabase
       .from('plant_production_batches')
       .update({ status: 'procesado' })
       .eq('id', plantBatch.id)
+    if (updErr) throw new Error(updErr.message)
+    trackAction('cerrar_lote')
     loadData()
   }
 
@@ -841,6 +892,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         .update({ status: 'completado', ...patch })
         .eq('id', orderId)
       if (updErr) throw new Error(updErr.message)
+      trackAction('completar_orden')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -906,7 +958,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             <Icon name={showStock ? 'chevronUp' : 'chevronDown'} size={14} />
             {showStock ? 'Ocultar stock' : 'Stock de lotes origen'}
           </button>
-          <button className="btn primary" onClick={() => { setModalOrden(true); setError('') }}>
+          <button className="btn primary" onClick={() => { setModalOrden(true); setError(''); setOrderDatesError('') }}>
             + Nueva orden
           </button>
         </div>
@@ -938,7 +990,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <th>Módulo</th>
                   <th>Productor</th>
                   <th>Recibido (kg)</th>
-                  <th>Usado (kg)</th>
+                  <th>Consumido (kg)</th>
                   <th>Disponible (kg)</th>
                   <th>Estado</th>
                 </tr>
@@ -958,7 +1010,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                         <span className="muted" style={{ marginLeft: 4 }}>({pctUsed.toFixed(0)}%)</span>
                       </td>
                       <td>
-                        <strong style={{ color: available <= 0 ? '#dc2626' : available < received * 0.2 ? 'var(--warning)' : 'var(--success)' }}>
+                        <strong style={{ color: available <= 0 ? 'var(--danger)' : available < received * 0.2 ? 'var(--warning)' : 'var(--success)' }}>
                           {available.toFixed(1)}
                         </strong>
                       </td>
@@ -1011,6 +1063,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
 
       {loading ? (
         <SkeletonList count={3} lines={2} />
+      ) : loadError && orders.length === 0 ? (
+        <ErrorState message="No se pudieron cargar las órdenes. Revise la conexión e intente de nuevo." onRetry={loadData} />
       ) : enProceso.length === 0 ? (
         <EmptyState message={searchNeedle ? 'Ninguna orden en proceso coincide con la búsqueda.' : 'No hay órdenes en proceso.'} />
       ) : (
@@ -1027,7 +1081,10 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               onEditLote={openEditLote}
               onAddLote={() => {
                 setModalLote(order.id)
-                setFormLote({ ...emptyFormLote, ...computeLoteDefaults(order) })
+                // Fecha de vencimiento asignada automáticamente (vida útil de la
+                // cooperativa); se puede corregir a mano.
+                const loteDefaults = computeLoteDefaults(order)
+                setFormLote({ ...emptyFormLote, ...loteDefaults, best_before_date: calcBestBeforeDate(loteDefaults.packaging_type, loteDefaults.packaging_kg) })
                 setAssignBrandToProduct(false)
                 setAutoBoxesCount('')
                 // Un lote de envasado siempre es orgánico -- la certificación
@@ -1047,6 +1104,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               onDocumentos={() => setModalQuickDocs({ order, containerNumber: null })}
               onResumenTrazabilidad={(pb) => setModalQuickDocs({ order, containerNumber: null, initialDocKey: 'resumen_trazabilidad', initialBatch: pb })}
               onReload={loadData}
+              controlsVersion={controlsVersion}
             />
           ))}
         </div>
@@ -1112,14 +1170,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   </datalist>
                 </div>
               )}
-              <p className="muted small" style={{ margin: '0 0 8px' }}>
-                La carga total se calcula sola, a medida que agregues {getLoteLabelPluralLower(COOPERATIVE, formOrden)}.
-              </p>
-              {formOrden.sale_type !== 'nacional' && (
-                <p className="muted small" style={{ margin: '0 0 8px' }}>
-                  El número de contenedor se carga después, en "Asignar a contenedor" -- normalmente todavía no se conoce en este paso.
-                </p>
-              )}
               <div className="field" style={{ margin: 0 }}>
                 <label>Producto</label>
                 <input
@@ -1164,10 +1214,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   placeholder="Ej: dado por el cliente"
                   value={formOrden.client_order_number}
                   onChange={e => setFormOrden({ ...formOrden, client_order_number: e.target.value })}
+                  aria-invalid={!!dupCreateMsg}
+                  style={dupCreateMsg ? { borderColor: 'var(--danger)' } : undefined}
                 />
+                {dupCreateMsg && <span className="field-error">{dupCreateMsg}</span>}
               </div>
               <div className="field" style={{ marginTop: 8 }}>
-                <label>Contenedor N°</label>
+                <label>Contenedor N° (opcional)</label>
                 <input
                   type="text"
                   placeholder="Código interno de la cooperativa"
@@ -1175,7 +1228,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormOrden({ ...formOrden, internal_container_number: e.target.value })}
                 />
                 <p className="muted small" style={{ margin: '4px 0 0' }}>
-                  Distinto de la serie del contenedor físico (esa se carga después, al despachar). Este es el que sale impreso en los documentos de planta.
+                  Sale impreso en los documentos de planta (no es la serie del contenedor físico).
                 </p>
               </div>
               <div style={{ marginTop: 12, fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -1199,6 +1252,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <DateInput value={formOrden.envasado_fecha_fin} onChange={e => setFormOrden({ ...formOrden, envasado_fecha_fin: e.target.value })} />
                 </div>
               </div>
+              {orderDatesError && <p className="field-error" style={{ margin: '4px 0 0' }}>{orderDatesError}</p>}
               <div className="field" style={{ marginTop: 8 }}>
                 <label>Observaciones</label>
                 <textarea
@@ -1208,7 +1262,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormOrden({ ...formOrden, notes: e.target.value })}
                 />
               </div>
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => setModalOrden(false)} disabled={saving}>Cancelar</button>
@@ -1244,10 +1298,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormCliente({ ...formCliente, code: e.target.value })}
                 />
               </div>
-              <p className="muted small">
-                Los valores predeterminados de presentación se configuran después, en "Catálogos".
-              </p>
-              {clienteError && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{clienteError}</p>}
+              {clienteError && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{clienteError}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalCliente(false); setClienteError('') }} disabled={savingCliente}>Cancelar</button>
@@ -1320,7 +1371,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 </div>
               )}
               <p className="muted small" style={{ margin: '0 0 8px' }}>
-                Carga total actual: <strong>{modalEditOrden.total_kg != null ? Number(modalEditOrden.total_kg).toFixed(1) : '0'} kg</strong> — se recalcula sola según los {getLoteLabelPluralLower(COOPERATIVE, formEditOrden)}.
+                Carga total actual: <strong>{modalEditOrden.total_kg != null ? Number(modalEditOrden.total_kg).toFixed(1) : '0'} kg</strong>
               </p>
               <div className="grid two" style={{ gap: 8, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
@@ -1360,11 +1411,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                     type="text"
                     value={formEditOrden.client_order_number}
                     onChange={e => setFormEditOrden({ ...formEditOrden, client_order_number: e.target.value })}
+                    aria-invalid={!!dupEditMsg}
+                    style={dupEditMsg ? { borderColor: 'var(--danger)' } : undefined}
                   />
+                  {dupEditMsg && <span className="field-error">{dupEditMsg}</span>}
                 </div>
               </div>
               <div className="field" style={{ marginTop: 8 }}>
-                <label>Contenedor N°</label>
+                <label>Contenedor N° (opcional)</label>
                 <input
                   type="text"
                   placeholder="Código interno de la cooperativa"
@@ -1372,7 +1426,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormEditOrden({ ...formEditOrden, internal_container_number: e.target.value })}
                 />
                 <p className="muted small" style={{ margin: '4px 0 0' }}>
-                  Distinto de la serie del contenedor físico (esa se carga después, al despachar). Este es el que sale impreso en los documentos de planta.
+                  Sale impreso en los documentos de planta (no es la serie del contenedor físico).
                 </p>
               </div>
               <div style={{ marginTop: 12, fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -1396,6 +1450,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <DateInput value={formEditOrden.envasado_fecha_fin} onChange={e => setFormEditOrden({ ...formEditOrden, envasado_fecha_fin: e.target.value })} />
                 </div>
               </div>
+              {orderDatesError && <p className="field-error" style={{ margin: '4px 0 0' }}>{orderDatesError}</p>}
               <div className="field" style={{ marginTop: 8 }}>
                 <label>Observaciones</label>
                 <textarea
@@ -1405,7 +1460,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormEditOrden({ ...formEditOrden, notes: e.target.value })}
                 />
               </div>
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => setModalEditOrden(null)} disabled={saving}>Cancelar</button>
@@ -1423,6 +1478,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           <div className="modal-content">
             <div className="modal-body">
               <h3 style={{ margin: '0 0 16px' }}>Agregar {ADD_LOTE_LABEL_LOWER} de planta</h3>
+              <LoteStockNotice stockItems={stockItems} plannedKg={(parseFloat(formLote.packaging_count) || 0) * (parseFloat(formLote.packaging_kg) || 0)} />
               <div className="field">
                 <label>Producto del catálogo *</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1432,13 +1488,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                     onChange={e => applyProductToLoteForm(setFormLote, e.target.value)}
                   >
                     <option value="">Sin producto de catálogo</option>
-                    {productsForSelect(loteAddOrder?.client_id).map(p => (
+                    {productsForSelect().map(p => (
                       <option key={p.id} value={p.id}>{p.description}</option>
                     ))}
                   </select>
                   <button type="button" className="btn small outline" onClick={() => {
                     setProductoError('')
-                    setFormProducto({ ...emptyFormProducto, client_id: loteAddOrder?.client_id || '' })
+                    setFormProducto(emptyFormProducto)
                     setModalProducto(true)
                   }}>
                     + Nuevo
@@ -1447,7 +1503,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
               <div className="grid two" style={{ gap: 8, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Marca *</label>
+                  <label>Marca{isOrderNacional(COOPERATIVE, loteAddOrder) ? ' (opcional)' : ' *'}</label>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       type="text"
@@ -1469,7 +1525,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   </div>
                   {productHasOwnBrand(formLote.product_catalog_id) && (
                     <p className="muted small" style={{ margin: '4px 0 0' }}>
-                      La marca viene fija por el producto elegido — para otra marca, cree un producto nuevo.
+                      Definida por el producto elegido.
                     </p>
                   )}
                   {!productHasOwnBrand(formLote.product_catalog_id) && formLote.product_catalog_id && formLote.brand.trim() && (
@@ -1586,7 +1642,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <label>Certificaciones del {ADD_LOTE_LABEL_LOWER}</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                     {availableCerts.map(cert => (
-                      <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: loteCertIds.includes(cert.id) ? '#dbeafe' : '#f1f5f9', border: `1px solid ${loteCertIds.includes(cert.id) ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
+                      <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: loteCertIds.includes(cert.id) ? 'var(--info-bg-strong)' : 'var(--surface-alt)', border: `1px solid ${loteCertIds.includes(cert.id) ? 'var(--info-border)' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
                         <input
                           type="checkbox"
                           checked={loteCertIds.includes(cert.id)}
@@ -1598,7 +1654,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   </div>
                 </div>
               )}
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalLote(null); setLoteCertIds([]) }} disabled={saving}>Cancelar</button>
@@ -1616,6 +1672,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           <div className="modal-content">
             <div className="modal-body">
               <h3 style={{ margin: '0 0 16px' }}>Editar {EDIT_LOTE_LABEL_LOWER} de planta</h3>
+              <LoteStockNotice stockItems={stockItems} plannedKg={(parseFloat(formEditLote.packaging_count) || 0) * (parseFloat(formEditLote.packaging_kg) || 0)} />
               <div className="field">
                 <label>Producto del catálogo *</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1625,13 +1682,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                     onChange={e => applyProductToLoteForm(setFormEditLote, e.target.value)}
                   >
                     <option value="">Sin producto de catálogo</option>
-                    {[...productsForSelect(editLoteOrder?.client_id), ...products.filter(p => !p.is_active && p.id === formEditLote.product_catalog_id)].map(p => (
+                    {[...productsForSelect(), ...products.filter(p => !p.is_active && p.id === formEditLote.product_catalog_id)].map(p => (
                       <option key={p.id} value={p.id}>{p.description}</option>
                     ))}
                   </select>
                   <button type="button" className="btn small outline" onClick={() => {
                     setProductoError('')
-                    setFormProducto({ ...emptyFormProducto, client_id: editLoteOrder?.client_id || '' })
+                    setFormProducto(emptyFormProducto)
                     setModalProducto(true)
                   }}>
                     + Nuevo
@@ -1640,7 +1697,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
               <div className="grid two" style={{ gap: 8, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Marca *</label>
+                  <label>Marca{isOrderNacional(COOPERATIVE, editLoteOrder) ? ' (opcional)' : ' *'}</label>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       type="text"
@@ -1662,7 +1719,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   </div>
                   {productHasOwnBrand(formEditLote.product_catalog_id) && (
                     <p className="muted small" style={{ margin: '4px 0 0' }}>
-                      La marca viene fija por el producto elegido — para otra marca, cree un producto nuevo.
+                      Definida por el producto elegido.
                     </p>
                   )}
                   {!productHasOwnBrand(formEditLote.product_catalog_id) && formEditLote.product_catalog_id && formEditLote.brand.trim() && (
@@ -1779,7 +1836,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   <label>Certificaciones del {EDIT_LOTE_LABEL_LOWER}</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                     {availableCerts.map(cert => (
-                      <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: editLoteCertIds.includes(cert.id) ? '#dbeafe' : '#f1f5f9', border: `1px solid ${editLoteCertIds.includes(cert.id) ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
+                      <label key={cert.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: editLoteCertIds.includes(cert.id) ? 'var(--info-bg-strong)' : 'var(--surface-alt)', border: `1px solid ${editLoteCertIds.includes(cert.id) ? 'var(--info-border)' : 'var(--border)'}`, borderRadius: 6, padding: '4px 10px' }}>
                         <input
                           type="checkbox"
                           checked={editLoteCertIds.includes(cert.id)}
@@ -1791,7 +1848,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   </div>
                 </div>
               )}
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalEditLote(null); setEditLoteCertIds([]) }} disabled={saving}>Cancelar</button>
@@ -1835,18 +1892,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
               <div className="grid two" style={{ gap: 8, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Cliente</label>
-                  <select
-                    value={formProducto.client_id}
-                    onChange={e => setFormProducto({ ...formProducto, client_id: e.target.value })}
-                  >
-                    <option value="">Sin cliente / genérico</option>
-                    {clients.filter(c => c.is_active).map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field" style={{ margin: 0 }}>
                   <label>Marca</label>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <select
@@ -1885,10 +1930,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   />
                 </div>
               </div>
-              <p className="muted small" style={{ marginTop: 8 }}>
-                Estos valores solo se sugieren al armar un {LOTE_LABEL_LOWER} de esta orden — no restringen nada, siguen siendo editables.
-              </p>
-              {productoError && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{productoError}</p>}
+              {productoError && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{productoError}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalProducto(false); setProductoError('') }} disabled={savingProducto}>Cancelar</button>
@@ -1917,7 +1959,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   onChange={e => setFormMarca(e.target.value)}
                 />
               </div>
-              {marcaError && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{marcaError}</p>}
+              {marcaError && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{marcaError}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalMarca(false); setMarcaError('') }} disabled={savingMarca}>Cancelar</button>
@@ -1947,7 +1989,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         <MonitoreoTamizadoCaesModal
           plantBatch={modalMonitoreoTamizadoCaes}
           webUser={webUser}
-          onClose={() => setModalMonitoreoTamizadoCaes(null)}
+          onClose={() => { setModalMonitoreoTamizadoCaes(null); setControlsVersion(v => v + 1) }}
         />
       )}
       {modalSelladoEnvasadoCaes && (
@@ -1955,14 +1997,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           plantBatch={modalSelladoEnvasadoCaes.batch}
           order={modalSelladoEnvasadoCaes.order}
           webUser={webUser}
-          onClose={() => setModalSelladoEnvasadoCaes(null)}
+          onClose={() => { setModalSelladoEnvasadoCaes(null); setControlsVersion(v => v + 1) }}
         />
       )}
       {modalHermeticidadCaes && (
         <HermeticidadEnvasesCaesModal
           plantBatch={modalHermeticidadCaes}
           webUser={webUser}
-          onClose={() => setModalHermeticidadCaes(null)}
+          onClose={() => { setModalHermeticidadCaes(null); setControlsVersion(v => v + 1) }}
         />
       )}
 
@@ -1986,6 +2028,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           initialBatch={modalQuickDocs.initialBatch}
           onClose={() => setModalQuickDocs(null)}
           quickDocs={QUICK_DOCS}
+          fieldDocs={FIELD_DOCS}
         />
       )}
     </div>

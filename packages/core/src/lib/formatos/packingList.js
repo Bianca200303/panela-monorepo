@@ -3,6 +3,46 @@ import { supabase } from '../supabase'
 import { PRINT_STYLES, metaRow, transportRow, yesNo, resolveContainerContext, escapeHtml } from './shared'
 import { loteLabel } from '../loteHelpers'
 import { getLoteLabel } from '../labels'
+import { fetchTramos, tramosPorLote, summarizeTramos } from './tramos'
+
+// CAES (venta nacional/exportación): el Packing List de exportación lleva
+// además los datos del embarque y las guías de remisión por lote. Todo se
+// toma de lo ya registrado -- contenedor (paso 1), carga (paso 2), tramos
+// (Control de Unidad de Transporte, único lugar de las guías) y despacho --
+// sin pedir nada de nuevo.
+function embarqueCaes(cooperative, container, orders, carga, extras) {
+  if (!cooperative?.features?.ventaNacionalExportacion) return null
+  const ex = container?.extra_data ?? {}
+  const porLote = tramosPorLote(extras?.tramos ?? [])
+  const batches = orders.flatMap(o => o.plant_production_batches ?? [])
+  const join = (a) => [...new Set(a.filter(Boolean))].join(', ')
+  return {
+    // Placa: dato del camión, se escribe solo en el tramo (puede haber varios camiones).
+    placas: summarizeTramos(extras?.tramos ?? []).placas.join(', ') || null,
+    meta: [
+      ['Exportado por', cooperative?.name],
+      ['Destino', join(orders.map(o => o.market))],
+      ['Factura', ex.factura_comercial],
+      ['Precinto de aduana', ex.precinto_aduana],
+      ['Puerto de salida', ex.puerto_salida],
+      ['Booking', container?.booking_number],
+      ['Naviera', container?.shipping_line],
+      ['Nombre de la nave', ex.vessel],
+      ['Fecha de ingreso al almacén portuario', extras?.dispatch?.extra_data?.fecha_ingreso_almacen_portuario],
+      ['Fecha de carga', carga?.fecha_carga],
+    ],
+    guias: batches.map(b => {
+      const ts = porLote[b.id] ?? []
+      return {
+        lote: loteLabel(b),
+        grCaes: join(ts.map(t => t.guia_remision)) || null,
+        grTransp: join(ts.map(t => t.guia_remision_transportista)) || null,
+        sinTramo: ts.length === 0,
+      }
+    }),
+  }
+}
+const fmtIso = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v).split('-').reverse().join('/') : v)
 
 export const FORMAT_TITLE_PACKING_LIST = 'PACKING LIST'
 
@@ -37,7 +77,8 @@ export async function fetchPackingListData(container) {
   return { carga, pallets: pallets ?? [], people: people ?? [] }
 }
 
-export function buildPrintHTMLPackingList(cooperative, container, orders, carga, pallets, people) {
+export function buildPrintHTMLPackingList(cooperative, container, orders, carga, pallets, people, extras = {}) {
+  const caes = embarqueCaes(cooperative, container, orders, carga, extras)
   const LOTE_LABEL = getLoteLabel(cooperative, orders[0])
   const coopName = cooperative?.name ?? ''
   const clientNames = [...new Set(orders.map(o => o.plant_clients?.name).filter(Boolean))].join(', ')
@@ -95,20 +136,33 @@ export function buildPrintHTMLPackingList(cooperative, container, orders, carga,
     <div class="formato-meta">
       ${metaRow('N° de documento', carga?.documento_number)}
       ${metaRow('N° Contenedor', container?.container_number)}
-      ${metaRow('Comprador / Importador', clientNames)}
-      ${metaRow('Destino / Puerto', container?.destination_port)}
+      ${metaRow(caes ? 'Importado por' : 'Comprador / Importador', clientNames)}
+      ${caes ? caes.meta.map(([l, v]) => metaRow(l, fmtIso(v))).join('') : metaRow('Destino / Puerto', container?.destination_port)}
       ${metaRow('OP', opNumbers)}
       ${metaRow('N° venta', saleNumbers)}
     </div>
     <table class="formato-table" style="width:100%;margin-top:6px">
       <tbody>
         ${transportRow(['Tara (kg)', carga?.tara_kg], ['Payload (kg)', carga?.payload_kg], ['Weight (kg)', weightKg])}
-        ${transportRow(['Placa de camión', carga?.placa_camion], ['Placa de carreta', carga?.placa_carreta])}
+        ${caes
+          ? transportRow(['Placa (camión / carreta)', caes.placas])
+          : transportRow(['Placa de camión', carga?.placa_camion], ['Placa de carreta', carga?.placa_carreta])}
         ${transportRow(['Precinto Inicial', carga?.precinto_inicial], ['Precinto de Línea', carga?.precinto_linea], ['Hora Inicio', carga?.hora_inicio])}
         ${transportRow(['Precinto Final', container?.seal_number], [cooperative?.features?.precintoPropioLabel ?? 'Precinto propio', carga?.precinto_norandino], ['Hora Fin', carga?.hora_fin])}
       </tbody>
     </table>
   </div>
+
+  ${caes ? `
+  <p style="font-size:11px;font-weight:700;margin:10px 0 4px">Guías de remisión por ${LOTE_LABEL.toLowerCase()}</p>
+  <table class="formato-table" style="width:100%">
+    <thead><tr><th>${LOTE_LABEL}</th><th>GR CAES</th><th>GR transportista</th></tr></thead>
+    <tbody>${caes.guias.map(g => `<tr>
+      <td style="text-align:center">${escapeHtml(g.lote) ?? '—'}</td>
+      <td style="text-align:center">${g.sinTramo ? 'Sin guía asignada' : (escapeHtml(g.grCaes) ?? '—')}</td>
+      <td style="text-align:center">${g.sinTramo ? 'Sin guía asignada' : (escapeHtml(g.grTransp) ?? 'Pendiente')}</td>
+    </tr>`).join('') || '<tr><td colspan="3" style="text-align:center">Sin lotes</td></tr>'}</tbody>
+  </table>` : ''}
 
   ${cooperative?.features?.pallets ? `
   <p style="font-size:11px;font-weight:700;margin:10px 0 4px">Packing List</p>
@@ -154,11 +208,12 @@ export function buildPrintHTMLPackingList(cooperative, container, orders, carga,
 </html>`
 }
 
-export function packingListPdf(cooperative, container, orders, carga, pallets, people) {
-  return buildPrintHTMLPackingList(cooperative, container, orders, carga, pallets, people)
+export function packingListPdf(cooperative, container, orders, carga, pallets, people, extras = {}) {
+  return buildPrintHTMLPackingList(cooperative, container, orders, carga, pallets, people, extras)
 }
 
-export function packingListExcel(cooperative, container, orders, carga, pallets, people) {
+export function packingListExcel(cooperative, container, orders, carga, pallets, people, extras = {}) {
+  const caes = embarqueCaes(cooperative, container, orders, carga, extras)
   const LOTE_LABEL = getLoteLabel(cooperative, orders[0])
   const clientNames = [...new Set(orders.map(o => o.plant_clients?.name).filter(Boolean))].join(', ')
   const opNumbers = [...new Set(orders.map(o => o.client_order_number ?? o.order_code).filter(Boolean))].join(', ')
@@ -169,16 +224,22 @@ export function packingListExcel(cooperative, container, orders, carga, pallets,
     ['PACKING LIST'],
     ['N° de documento:', carga?.documento_number ?? ''],
     ['N° Contenedor:', container?.container_number ?? ''],
-    ['Comprador / Importador:', clientNames],
-    ['Destino / Puerto:', container?.destination_port ?? ''],
+    [caes ? 'Importado por:' : 'Comprador / Importador:', clientNames],
+    ...(caes ? caes.meta.map(([l, v]) => [`${l}:`, fmtIso(v) ?? '']) : [['Destino / Puerto:', container?.destination_port ?? '']]),
     ['OP:', opNumbers],
     ['N° venta:', saleNumbers],
     [],
     ['Tara (kg):', carga?.tara_kg ?? '', 'Payload (kg):', carga?.payload_kg ?? '', 'Weight (kg):', weightKg],
-    ['Placa camión:', carga?.placa_camion ?? '', 'Placa carreta:', carga?.placa_carreta ?? ''],
+    caes ? ['Placa (camión / carreta):', caes.placas ?? ''] : ['Placa camión:', carga?.placa_camion ?? '', 'Placa carreta:', carga?.placa_carreta ?? ''],
     ['Precinto Inicial:', carga?.precinto_inicial ?? '', 'Precinto de Línea:', carga?.precinto_linea ?? '', 'Hora Inicio:', carga?.hora_inicio ?? ''],
     ['Precinto Final:', container?.seal_number ?? '', `${cooperative?.features?.precintoPropioLabel ?? 'Precinto propio'}:`, carga?.precinto_norandino ?? '', 'Hora Fin:', carga?.hora_fin ?? ''],
     [],
+    ...(caes ? [
+      [`Guías de remisión por ${LOTE_LABEL.toLowerCase()}`],
+      [LOTE_LABEL, 'GR CAES', 'GR transportista'],
+      ...caes.guias.map(g => [g.lote ?? '', g.sinTramo ? 'Sin guía asignada' : (g.grCaes ?? ''), g.sinTramo ? 'Sin guía asignada' : (g.grTransp ?? 'Pendiente')]),
+      [],
+    ] : []),
     ...(cooperative?.features?.pallets ? [
       ['N°', 'N° pallet', 'Lado', 'N° cajas', LOTE_LABEL, 'Producto', '% H-P'],
       ...pallets.map((p, i) => [i + 1, p.pallet_number, p.lado === 'izquierda' ? 'Izquierda' : p.lado === 'derecha' ? 'Derecha' : '', p.boxes_count ?? '', p.plant_production_batches ? loteLabel(p.plant_production_batches) : '', p.plant_production_batches?.brand ?? '', p.humidity_pct ?? '']),
@@ -219,13 +280,19 @@ export async function fetchPackingListQuickDoc(cooperative, order) {
   if (!carga) {
     throw new Error('Todavía no se registró la carga de este contenedor (Packing List, se registra en Embarque).')
   }
-  return { container, orders: ordersInContainer, carga, pallets, people }
+  // CAES: guías (de los tramos) y fecha de ingreso al almacén portuario (del despacho).
+  const caes = !!cooperative?.features?.ventaNacionalExportacion
+  const tramos = caes ? await fetchTramos(container.id) : []
+  const { data: dispatch } = caes
+    ? await supabase.from('plant_dispatches').select('extra_data').eq('container_id', container.id).maybeSingle()
+    : { data: null }
+  return { container, orders: ordersInContainer, carga, pallets, people, extras: { tramos, dispatch } }
 }
 
 export function packingListQuickDocPdf(cooperative, order, containerNumber, data) {
-  return packingListPdf(cooperative, data.container, data.orders, data.carga, data.pallets, data.people)
+  return packingListPdf(cooperative, data.container, data.orders, data.carga, data.pallets, data.people, data.extras)
 }
 
 export function packingListQuickDocExcel(cooperative, order, containerNumber, data) {
-  packingListExcel(cooperative, data.container, data.orders, data.carga, data.pallets, data.people)
+  packingListExcel(cooperative, data.container, data.orders, data.carga, data.pallets, data.people, data.extras)
 }

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useConfirm } from '@panela/core/hooks/useConfirm'
+import { fetchTramos, tramoRuta } from '@panela/core/lib/formatos/tramos'
+import { formatDate } from '@panela/core/lib/loteHelpers'
 
 // Packing List-Nacional (CAESP-PP-BPM-RE-CPR-006) -- SOLO CAES. 1 registro
 // por contenedor (UNIQUE), bloqueable -- mismo patrón que el Packing List
@@ -11,16 +13,12 @@ import { useConfirm } from '@panela/core/hooks/useConfirm'
 // plant_containers.extra_data, editable en cualquier momento sin ningún
 // ciclo de vida -- ver migración 20260916120000.
 //
-// guia_tramo_interno/guia_tramo_final: deben coincidir con la guía del
-// Control de Unidad de Transporte correspondiente (confirmado con el
-// usuario) -- pero el Packing List se completa ANTES de que exista el CUT
-// del tramo final en la práctica real (evidencia: PL firmado 23/06, CUT
-// del tramo final recién 27/06), así que quedan como campos propios acá,
-// no derivados. TransportUnitControlsCaesModal.jsx los toma de acá como
-// sugerencia (prefill editable) al crear un control nuevo.
+// Guías de remisión: este formulario YA NO las pide. Se escriben una sola
+// vez en cada tramo (Control de Unidad de Transporte) y aquí solo se
+// muestran, para que no puedan quedar distintas (migración 20261107100000).
 
 function emptyForm() {
-  return { packing_list_numero: '', guia_tramo_interno: '', guia_tramo_final: '', final_observations: '' }
+  return { packing_list_numero: '', final_observations: '' }
 }
 
 function valuesFromRecord(r) {
@@ -46,6 +44,10 @@ export default function PackingListNacionalCaesModal({ container, webUser, onClo
   const [reopening, setReopening] = useState(false)
 
   useEffect(() => { load() }, [])
+
+  // Guías de los tramos de este despacho (solo lectura).
+  const [tramos, setTramos] = useState([])
+  useEffect(() => { fetchTramos(container.id).then(setTramos).catch(() => setTramos([])) }, [])
 
   async function load() {
     setLoading(true)
@@ -88,8 +90,6 @@ export default function PackingListNacionalCaesModal({ container, webUser, onClo
     try {
       const payload = {
         packing_list_numero: form.packing_list_numero.trim() || null,
-        guia_tramo_interno: form.guia_tramo_interno.trim() || null,
-        guia_tramo_final: form.guia_tramo_final.trim() || null,
         final_observations: form.final_observations.trim() || null,
       }
       const { data: updated, error: updErr } = await supabase
@@ -180,15 +180,25 @@ export default function PackingListNacionalCaesModal({ container, webUser, onClo
                   <input type="text" disabled={!isOpen} value={form.packing_list_numero} onChange={e => setForm({ ...form, packing_list_numero: e.target.value })} placeholder="Ej: N-25-90" />
                 </div>
               </div>
-              <div className="grid" style={{ gap: 8 }}>
-                <div className="field" style={{ margin: 0 }}>
-                  <label>Guía de remisión (tramo interno)</label>
-                  <input type="text" disabled={!isOpen} value={form.guia_tramo_interno} onChange={e => setForm({ ...form, guia_tramo_interno: e.target.value })} />
-                </div>
-                <div className="field" style={{ margin: 0 }}>
-                  <label>Guía de remisión (tramo final)</label>
-                  <input type="text" disabled={!isOpen} value={form.guia_tramo_final} onChange={e => setForm({ ...form, guia_tramo_final: e.target.value })} />
-                </div>
+              <div className="field">
+                <label>Guías de remisión</label>
+                {tramos.length === 0 ? (
+                  <p className="muted small" style={{ margin: 0 }}>Sin tramos registrados. Las guías se registran en "Control de unidad de transporte".</p>
+                ) : (
+                  <table className="table small">
+                    <thead><tr><th>Fecha</th><th>Recorrido</th><th>GR CAES</th><th>GR transportista</th></tr></thead>
+                    <tbody>
+                      {tramos.map(t => (
+                        <tr key={t.id}>
+                          <td>{formatDate(t.control_date)}</td>
+                          <td>{tramoRuta(t)}{t.es_tramo_final && <span className="tag ok" style={{ marginLeft: 6 }}>final</span>}</td>
+                          <td>{t.guia_remision ?? '—'}</td>
+                          <td>{t.guia_remision_transportista ?? <span style={{ color: 'var(--warning-text)' }}>pendiente</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
               <div className="field">
                 <label>Observaciones {!isOpen && '(cerrado)'}</label>
@@ -197,7 +207,7 @@ export default function PackingListNacionalCaesModal({ container, webUser, onClo
             </>
           )}
 
-          {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
         </div>
         <div className="modal-actions">
           <button className="btn small" onClick={onClose}>Cerrar</button>

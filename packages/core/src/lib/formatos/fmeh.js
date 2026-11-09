@@ -1,11 +1,11 @@
-import { PRINT_STYLES, fmtDate, fmtDateTime, buildFirmasHTML } from './shared'
+import { fmtDate } from './shared'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FMEH  = 'FMEH'
 export const FORMAT_TITLE_FMEH = 'FORMATO DE MANTENIMIENTO DE EQUIPOS Y HORNILLAS'
 
-export function buildPrintHTMLFmeh(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, records, firmantes) {
-  const firmasHTML  = buildFirmasHTML(firmantes)
-  const emisionDate = emittedAt ? fmtDateTime(emittedAt) : '—'
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFmehBodyHTML(records) {
 
   const rows = records.length > 0
     ? records.map((r, i) => {
@@ -28,24 +28,7 @@ export function buildPrintHTMLFmeh(cooperative, formatCode, moduleName, dateFrom
   const preventivos = records.filter(r => r.maintenance_type === 'P').length
   const correctivos = records.filter(r => r.maintenance_type === 'C').length
 
-  return `<!DOCTYPE html><html lang="es">
-<head><meta charset="UTF-8"><title>${FORMAT_TITLE_FMEH}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase">${cooperative?.name ?? ''}</div>
-      <div style="font-size:14px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FMEH}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-    </div>
-  </div>
-  <div style="margin-top:10px;overflow-x:auto">
+  return `  <div style="margin-top:10px;overflow-x:auto">
     <table class="formato-table">
       <thead>
         <tr>
@@ -62,7 +45,35 @@ export function buildPrintHTMLFmeh(cooperative, formatCode, moduleName, dateFrom
     <span><strong>Preventivos:</strong> <span style="color:#166534;font-weight:700">${preventivos}</span></span>
     <span><strong>Correctivos:</strong> <span style="color:#b45309;font-weight:700">${correctivos}</span></span>
     <span><strong>Horas totales:</strong> <strong>${totalHours.toFixed(1)} h</strong></span>
-  </div>
-  <div class="formato-firmas">${firmasHTML}</div>
-</body></html>`
+  </div>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, los mantenimientos del MES (o meses) de producción de los
+// lotes de campo de la orden.
+export function fetchFmehOrdenData(cooperative, order) {
+  return fetchCampoModuloRecords(cooperative, order, {
+    table: 'equipment_maintenance_records',
+    select: 'id, maintenance_date, equipment_name, maintenance_type, maintenance_cause, materials_used, duration_hours, responsible_person',
+    dateCol: 'maintenance_date',
+    mode: 'mes',
+  })
+}
+
+export function fmehOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fmeh', title: FORMAT_TITLE_FMEH, certNames: data.certNames, firmantes,
+    body: campoModulosBodyHTML(data, m => buildFmehBodyHTML(m.records), 'Sin mantenimientos registrados en el período.'),
+  })
+}
+
+export function fmehOrdenExcel(cooperative, order, containerNumber, data) {
+  const rows = [...campoExcelHeader(order, data.certNames, FORMAT_TITLE_FMEH),
+    ['Módulo', 'Fecha', 'Equipo / Hornilla', 'Tipo', 'Causa del mantenimiento', 'Materiales / Repuestos', 'Duración (h)', 'Responsable']]
+  for (const m of data.modulos) for (const r of m.records) {
+    rows.push([m.name, r.maintenance_date, r.equipment_name ?? '',
+      r.maintenance_type === 'P' ? 'Preventivo' : r.maintenance_type === 'C' ? 'Correctivo' : (r.maintenance_type ?? ''),
+      r.maintenance_cause ?? '', r.materials_used ?? '', r.duration_hours ?? '', r.responsible_person ?? ''])
+  }
+  writeCampoExcel('fmeh', order, containerNumber, [['Mantenimiento de equipos', rows]])
 }

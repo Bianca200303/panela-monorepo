@@ -1,35 +1,29 @@
-import { PRINT_STYLES, fmtDate, fmtDateTime, buildFirmasHTML } from './shared'
+import { supabase } from '../supabase'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FLDH  = 'FLDH'
 export const FORMAT_TITLE_FLDH = 'FORMATO DE LIMPIEZA Y DESINFECCIÓN'
 
-export function buildPrintHTMLFldh(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, records, firmantes) {
-  const firmasHTML  = buildFirmasHTML(firmantes)
-  const emisionDate = emittedAt ? fmtDateTime(emittedAt) : '—'
+export const FLDH_ALL_AREAS = [
+  'reception_milling', 'thermal_treatment', 'homogenization_packaging',
+  'warehouses', 'changing_rooms', 'restrooms', 'cleaning_equipment', 'reservoir',
+]
+export const FLDH_AREA_LABELS = {
+  reception_milling:        'Recepción, molienda y secado',
+  thermal_treatment:        'Tratamiento térmico',
+  homogenization_packaging: 'Homogenizado, tamizado y envasado',
+  warehouses:               'Almacenes',
+  changing_rooms:           'Vestuarios',
+  restrooms:                'Servicios higiénicos',
+  cleaning_equipment:       'Implementos de limpieza',
+  reservoir:                'Reservorio',
+}
 
-  const ALL_AREAS = [
-    'reception_milling', 'thermal_treatment', 'homogenization_packaging',
-    'warehouses', 'changing_rooms', 'restrooms', 'cleaning_equipment', 'reservoir',
-  ]
-  const AREA_LABEL = {
-    reception_milling:        'Recepción, molienda y secado',
-    thermal_treatment:        'Tratamiento térmico',
-    homogenization_packaging: 'Homogenizado, tamizado y envasado',
-    warehouses:               'Almacenes',
-    changing_rooms:           'Vestuarios',
-    restrooms:                'Servicios higiénicos',
-    cleaning_equipment:       'Implementos de limpieza',
-    reservoir:                'Reservorio',
-  }
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFldhBodyHTML(records, days) {
   const T_SHORT  = { daily: 'D', general: 'G', deep: 'P' }
   const T_COLOR  = { daily: '#1565C0', general: '#E65100', deep: '#6A1B9A' }
   const T_BG     = { daily: '#dbeafe', general: '#ffedd5', deep: '#f3e8ff' }
-
-  // All calendar days in the period
-  const days = []
-  for (let d = new Date(dateFrom + 'T00:00:00'); d <= new Date(dateTo + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-    days.push(d.toISOString().split('T')[0])
-  }
 
   // Lookup by date
   const byDate = {}
@@ -47,7 +41,7 @@ export function buildPrintHTMLFldh(cooperative, formatCode, moduleName, dateFrom
   }).join('')
 
   // Area rows
-  const areaRows = ALL_AREAS.map(code => {
+  const areaRows = FLDH_ALL_AREAS.map(code => {
     const cells = days.map(date => {
       const s = byDate[date]
       if (!s) return `<td style="background:#f9f9f9;border:1px solid #e5e5e5"></td>`
@@ -56,7 +50,7 @@ export function buildPrintHTMLFldh(cooperative, formatCode, moduleName, dateFrom
         ? `<td style="text-align:center;background:#f0fdf4;border:1px solid #e5e5e5;color:#2d6a4f;font-weight:900;font-size:11px">✓</td>`
         : `<td style="background:#fff;border:1px solid #e5e5e5;color:#fca5a5;text-align:center;font-size:9px">✗</td>`
     }).join('')
-    return `<tr><td style="font-size:9px;padding:3px 5px;border:1px solid #e5e5e5;white-space:nowrap;background:#fafafa">${AREA_LABEL[code]}</td>${cells}</tr>`
+    return `<tr><td style="font-size:9px;padding:3px 5px;border:1px solid #e5e5e5;white-space:nowrap;background:#fafafa">${FLDH_AREA_LABELS[code]}</td>${cells}</tr>`
   }).join('')
 
   // Products row
@@ -79,25 +73,8 @@ export function buildPrintHTMLFldh(cooperative, formatCode, moduleName, dateFrom
     `<span style="background:${T_BG[t]};color:${T_COLOR[t]};font-weight:800;border:1px solid ${T_COLOR[t]};border-radius:2px;padding:0 4px;font-size:9px">${T_SHORT[t]}</span> ${t === 'daily' ? 'Diaria' : t === 'general' ? 'General' : 'Profunda'}`
   ).join(' &nbsp; ')
 
-  return `<!DOCTYPE html><html lang="es">
-<head><meta charset="UTF-8"><title>${FORMAT_TITLE_FLDH}</title>
-  <style>${PRINT_STYLES} @page{size:A4 landscape;margin:8mm} body{font-size:10px}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:6px">
-      <div style="font-size:12px;font-weight:700;text-transform:uppercase">${cooperative?.name ?? ''}</div>
-      <div style="font-size:13px;font-weight:800;margin-top:3px;text-transform:uppercase">${FORMAT_TITLE_FLDH}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-    </div>
-  </div>
-  <div style="margin-top:8px;overflow-x:auto">
-    <table style="border-collapse:collapse;table-layout:fixed;width:100%">
+  return `  <div style="margin-top:8px;overflow-x:auto">
+    <table style="border-collapse:collapse;table-layout:fixed;width:100%;max-width:${200 + days.length * 30}px">
       <colgroup>
         <col style="width:145px">
         ${days.map(() => '<col style="width:24px">').join('')}
@@ -121,7 +98,62 @@ export function buildPrintHTMLFldh(cooperative, formatCode, moduleName, dateFrom
     <span><strong style="color:#6A1B9A">P Profunda:</strong> ${countProfunda}</span>
     <span><strong>Puntos totales:</strong> ${totalPuntos}</span>
     <span style="margin-left:auto">${legend}</span>
-  </div>
-  <div class="formato-firmas">${firmasHTML}</div>
-</body></html>`
+  </div>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, las limpiezas de los días exactos de producción; la grilla
+// muestra solo esos días (no el mes entero).
+export async function fetchFldhOrdenData(cooperative, order) {
+  const data = await fetchCampoModuloRecords(cooperative, order, {
+    table: 'cleaning_disinfections',
+    select: 'id, cleaning_date, cleaning_types, general_observations',
+    dateCol: 'cleaning_date',
+    mode: 'dia',
+  })
+  const ids = data.modulos.flatMap(m => m.records.map(r => r.id))
+  if (ids.length === 0) return data
+  const { data: items, error } = await supabase
+    .from('cleaning_disinfection_items')
+    .select('cleaning_disinfection_id, area_code, uses_chlorine, uses_detergent, uses_other_product')
+    .in('cleaning_disinfection_id', ids)
+  if (error) throw new Error(error.message)
+  // Misma forma que arma FormatosLimpiezaSection.jsx para buildFldhBodyHTML.
+  const withItems = s => {
+    const si = (items ?? []).filter(i => i.cleaning_disinfection_id === s.id)
+    return {
+      ...s,
+      areas:         [...new Set(si.map(i => i.area_code))],
+      totalPoints:   si.length,
+      usesChlorine:  si.some(i => i.uses_chlorine),
+      usesDetergent: si.some(i => i.uses_detergent),
+      usesOther:     si.some(i => i.uses_other_product),
+    }
+  }
+  return { ...data, modulos: data.modulos.map(m => ({ ...m, records: m.records.map(withItems) })) }
+}
+
+export function fldhOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fldh', title: FORMAT_TITLE_FLDH, certNames: data.certNames, firmantes,
+    styles: '@page{size:A4 landscape;margin:8mm}',
+    body: campoModulosBodyHTML(data, m => buildFldhBodyHTML(m.records, m.dates), 'Sin limpiezas registradas en las fechas de producción.'),
+  })
+}
+
+const FLDH_TYPE_LABELS = { daily: 'Diaria', general: 'General', deep: 'Profunda' }
+
+export function fldhOrdenExcel(cooperative, order, containerNumber, data) {
+  const rows = [...campoExcelHeader(order, data.certNames, FORMAT_TITLE_FLDH),
+    ['Módulo', 'Fecha', 'Tipo de limpieza', 'Áreas limpias', 'Áreas sin limpiar', 'Productos', 'Observaciones']]
+  for (const m of data.modulos) for (const r of m.records) {
+    rows.push([
+      m.name, r.cleaning_date, (r.cleaning_types ?? []).map(t => FLDH_TYPE_LABELS[t] ?? t).join(' + '),
+      r.areas.map(a => FLDH_AREA_LABELS[a] ?? a).join(', '),
+      FLDH_ALL_AREAS.filter(a => !r.areas.includes(a)).map(a => FLDH_AREA_LABELS[a]).join(', '),
+      [r.usesChlorine && 'Cloro', r.usesDetergent && 'Detergente', r.usesOther && 'Otro'].filter(Boolean).join(' + '),
+      r.general_observations ?? '',
+    ])
+  }
+  writeCampoExcel('fldh', order, containerNumber, [['Limpieza y desinfección', rows]])
 }

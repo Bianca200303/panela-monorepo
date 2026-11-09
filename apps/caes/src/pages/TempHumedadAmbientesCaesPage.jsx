@@ -5,6 +5,8 @@ import { useAuthStore } from '@panela/core/store/authStore'
 import { UBICACIONES } from '../lib/formatos/tempHumedadAmbientesCaes'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 
 // Control de Temperatura y Humedad de Ambientes (CAESP-PP-BPM-RE-RMP-003)
 // -- SOLO CAES, ver COOPERATIVE.features.controlesPlantaCAES en
@@ -47,9 +49,11 @@ export default function TempHumedadAmbientesCaesPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_temp_humidity_control_caes')
       .select('control_date, ubicacion, t_promedio, hr_promedio')
       .eq('cooperative_id', COOPERATIVE.id)
@@ -61,6 +65,7 @@ export default function TempHumedadAmbientesCaesPage() {
       entry.count++
     }
     setDates(Object.values(byDate))
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -124,6 +129,7 @@ export default function TempHumedadAmbientesCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -144,6 +150,8 @@ export default function TempHumedadAmbientesCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : dates.length === 0 ? (
           <EmptyState message="No hay registros de temperatura y humedad aún." />
         ) : (
@@ -242,7 +250,7 @@ export default function TempHumedadAmbientesCaesPage() {
         })}
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

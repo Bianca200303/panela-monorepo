@@ -34,3 +34,6 @@ dist-ssr
 
 # Office lock files
 ~$*
+
+# Reporte interno de uso (npm run reporte-uso)
+reportes-uso/

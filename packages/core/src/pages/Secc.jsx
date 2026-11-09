@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import Icon from '../components/Icon'
 
-export default function Secc({ titulo, badge, colorTitulo = '#374151', bgBody = '#f8fafc', children }) {
+export default function Secc({ titulo, badge, colorTitulo = 'var(--text-secondary)', bgBody = 'var(--surface-muted)', children }) {
   const [open, setOpen] = useState(false)
   const toggle = () => setOpen(o => !o)
   return (

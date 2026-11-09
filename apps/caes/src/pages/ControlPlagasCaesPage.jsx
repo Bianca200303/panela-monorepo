@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
@@ -7,6 +8,8 @@ import { getCoopCode, MONTH_NAMES } from '@panela/core/lib/formatos/shared'
 import { loadLimpiezaGeneralAreas } from '@panela/core/lib/formConfig'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 import MonthArrowSelect from '@panela/core/components/MonthArrowSelect'
 import PeriodExistsBanner from '@panela/core/components/PeriodExistsBanner'
@@ -81,21 +84,24 @@ export default function ControlPlagasCaesPage() {
     loadLimpiezaGeneralAreas(COOPERATIVE).then(groups => setAreaOptions(groups.map(g => g.area)))
   }, [])
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_pest_controls_caes')
       .select(`
         id, year, month, cebo_producto, insecto_producto, formato_codigo,
         plant_pest_rodent_events_caes ( id ),
         plant_pest_insect_events_caes ( id ),
-        registered_by:web_users!ppcc_created_by_fkey ( first_name, last_name )
+        audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!ppcc_created_by_fkey ( first_name, last_name )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
       .order('year', { ascending: false })
       .order('month', { ascending: false })
       .limit(50)
     setControls(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -249,6 +255,7 @@ export default function ControlPlagasCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -272,6 +279,8 @@ export default function ControlPlagasCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de plagas registrados aún." />
         ) : (
@@ -290,7 +299,7 @@ export default function ControlPlagasCaesPage() {
                   </div>
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
-                    {c.registered_by && `Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} />
                   </div>
                 </div>
               )
@@ -312,11 +321,6 @@ export default function ControlPlagasCaesPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            Mes y año identifican a este control ya guardado y no se pueden cambiar aquí. Para otro período, vuelva al historial y use "Editar".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Mes</label>
@@ -458,7 +462,7 @@ export default function ControlPlagasCaesPage() {
       </div>
       </>}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

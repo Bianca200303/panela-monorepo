@@ -1,3 +1,4 @@
+import ErrorState from '../components/ErrorState'
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
@@ -55,18 +56,18 @@ const ICONS = {
 // numeración. Sin datos ficticios (turno/estado de planta): el contador
 // "N módulos" es real (largo del array), no inventado.
 const menuItems = [
-  { path: '/recepcion', title: 'Recepcionar materia prima', desc: 'Registra las salidas recibidas de los productores', icon: 'box' },
-  { path: '/calidad', title: 'Registrar calidad', desc: 'Evalúa la calidad de la materia prima recepcionada', icon: 'clipboard' },
-  { path: '/ordenes', title: 'Órdenes de producción', desc: 'Crea y gestiona órdenes de producción interna', icon: 'list' },
-  { path: '/embarque', title: 'Embarque', desc: 'Órdenes completadas: asignar contenedor, carga, despacho y trazabilidad', icon: 'truck' },
-  { path: '/controles', title: 'Controles de planta de envasado', desc: 'Higiene, limpieza, plagas, cloro residual y demás controles SIG', icon: 'shield' },
-  { path: '/reportes', title: 'Reportes', desc: 'Visualiza estadísticas y trazabilidad completa', icon: 'chart' },
-  { path: '/catalogos', title: 'Catálogos', desc: 'Clientes, marcas, productos y demás catálogos del sistema', icon: 'database' },
+  { path: '/recepcion', title: 'Recepcionar materia prima', icon: 'box' },
+  { path: '/calidad', title: 'Registrar calidad', icon: 'clipboard' },
+  { path: '/ordenes', title: 'Órdenes de producción', icon: 'list' },
+  { path: '/embarque', title: 'Embarque', icon: 'truck' },
+  { path: '/controles', title: 'Controles de planta de envasado', icon: 'shield' },
+  { path: '/reportes', title: 'Reportes', icon: 'chart' },
+  { path: '/catalogos', title: 'Catálogos', icon: 'database' },
 ]
 
 // Igual que en Layout.jsx: el link a Usuarios solo se muestra a admin_web.
 const adminMenuItems = [
-  { path: '/usuarios', title: 'Usuarios', desc: 'Administra las cuentas y roles de los usuarios del sistema', icon: 'users' },
+  { path: '/usuarios', title: 'Usuarios', icon: 'users' },
 ]
 
 function fechaHoy() {
@@ -80,7 +81,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [, setError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -90,8 +91,10 @@ export default function DashboardPage() {
         .select('status, total_kg')
         .eq('cooperative_id', COOPERATIVE.id),
       fetchStockSummary(COOPERATIVE),
-    ]).then(([{ data }, stock]) => {
+    ]).then(([{ data, error: ordersErr }, stock]) => {
       if (cancelled) return
+      // Antes un fallo mostraba "0 órdenes" como si fuera un dato real.
+      if (ordersErr) throw ordersErr
       const rows = data ?? []
       const enProceso = rows.filter(r => r.status === 'en_proceso')
       setStats({
@@ -141,7 +144,9 @@ export default function DashboardPage() {
             </div>
           ))
         ) : (
-          <p style={{ color: 'var(--danger)', margin: 0, gridColumn: '1 / -1' }}>{error}</p>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <ErrorState message="No se pudo cargar el resumen. Revise la conexión y recargue la página." onRetry={() => window.location.reload()} />
+          </div>
         )}
       </div>
 
@@ -149,7 +154,6 @@ export default function DashboardPage() {
         <div>
           <h3 style={{ margin: 0, fontSize: 17 }}>Acceso rápido</h3>
         </div>
-        <span className="muted small">{allMenuItems.length} módulos</span>
       </div>
 
       <div className="module-grid">
@@ -164,7 +168,6 @@ export default function DashboardPage() {
               <span className="module-icon">{ICONS[item.icon]}</span>
             </div>
             <strong className="module-title">{item.title}</strong>
-            <p className="module-desc">{item.desc}</p>
             <span className="module-open">Abrir →</span>
           </div>
         ))}

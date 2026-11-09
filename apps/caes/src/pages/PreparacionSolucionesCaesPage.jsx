@@ -1,9 +1,12 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 import PeriodExistsBanner from '@panela/core/components/PeriodExistsBanner'
 
@@ -54,19 +57,22 @@ export default function PreparacionSolucionesCaesPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_solution_prep_controls_caes')
       .select(`
         id, control_date, preparacion_de,
         plant_solution_prep_events_caes ( id ),
-        registered_by:web_users!pspcc_created_by_fkey ( first_name, last_name )
+        audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pspcc_created_by_fkey ( first_name, last_name )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
       .limit(50)
     setControls(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -184,6 +190,7 @@ export default function PreparacionSolucionesCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -204,6 +211,8 @@ export default function PreparacionSolucionesCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay registros de preparación de soluciones aún." />
         ) : (
@@ -223,7 +232,7 @@ export default function PreparacionSolucionesCaesPage() {
                     </div>
                   </div>
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
-                    {c.registered_by && `Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} />
                   </div>
                 </div>
               )
@@ -255,11 +264,6 @@ export default function PreparacionSolucionesCaesPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            "Preparación de" identifica a este control ya guardado y no se puede cambiar aquí. Para otro tipo de preparación, vuelva al historial y use "Editar" o "+ Nuevo registro".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Fecha</label>
@@ -343,7 +347,7 @@ export default function PreparacionSolucionesCaesPage() {
       </div>
       </>}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

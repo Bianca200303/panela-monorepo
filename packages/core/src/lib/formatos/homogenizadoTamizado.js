@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import { supabase } from '../supabase'
-import { PRINT_STYLES, fmtNum, enrichRawMaterialEntries, quickDocFileName, buildFirmasHTML, escapeHtml } from './shared'
+import { PRINT_STYLES, fmtNum, enrichRawMaterialEntries, quickDocFileName, buildFirmasHTML, escapeHtml, containerMetaHTML, containerExcelRows } from './shared'
 import { loteLabel } from '../loteHelpers'
 import { getLoteLabel, getBunqueLabel } from '../labels'
 import { buildRegistroTrazabilidadRows, fetchOrderCertNames } from './registroTrazabilidad'
@@ -202,7 +202,7 @@ export function buildPrintHTMLRegistroHomogenizadoTamizado(cooperative, order, c
       <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_REGISTRO_HOMOGENIZADO_TAMIZADO}</div>
     </div>
     <div class="formato-meta">
-      <div><span class="meta-label">Contenedor N°:</span> ${order?.internal_container_number ?? '—'}</div>
+      ${containerMetaHTML(order)}
       <div><span class="meta-label">Nº de venta:</span> ${order?.sale_number ?? '—'}</div>
       <div><span class="meta-label">Producto:</span> ${order?.product ?? '—'}</div>
       <div><span class="meta-label">Nº orden producción:</span> ${order?.client_order_number ?? order?.order_code ?? '—'}</div>
@@ -228,7 +228,7 @@ export function registroHomogenizadoTamizadoExcel(cooperative, order, containerN
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const aoa = [
     ['REGISTRO DE HOMOGENIZADO Y TAMIZADO'],
-    ['Contenedor N°:', order?.internal_container_number ?? ''],
+    ...containerExcelRows(order),
     ['Nº de venta:', order?.sale_number ?? ''],
     ['Producto:', order?.product ?? ''],
     ['Nº orden producción:', order?.client_order_number ?? order?.order_code ?? ''],

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { COOPERATIVE } from '../lib/config'
 import { useGridControl } from '@panela/core/hooks/useGridControl'
 import { loadCloroResidualPuntos } from '@panela/core/lib/formConfig'
@@ -6,6 +7,7 @@ import { CHLORINE_RESIDUAL_MIN_PPM } from '../lib/formatos/cloroResidual'
 import { getCoopCode } from '@panela/core/lib/formatos/shared'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
 
 // Control de Cloro Residual (SIG-GIA-RG-001) -- registro por FECHA exacta,
 // independiente de cualquier orden/lote: 1 control por fecha, con una
@@ -36,7 +38,7 @@ export default function CloroResidualPage() {
   useEffect(() => { loadCloroResidualPuntos(COOPERATIVE).then(setPoints) }, [])
 
   const {
-    view, setView, controls, loadingHistory,
+    view, setView, controls, loadingHistory, historyError, reload: reloadHistory,
     editingId, header, updateHeader, updateIdentity,
     cellValue, setCellValue,
     saving, error,
@@ -44,7 +46,7 @@ export default function CloroResidualPage() {
   } = useGridControl({
     table: 'plant_chlorine_residual_controls',
     childTable: 'plant_chlorine_residual_checks',
-    historySelect: 'id, control_date, responsible_person, formato_codigo, plant_chlorine_residual_checks ( result_ppm ), registered_by:web_users!pcrc_created_by_fkey ( first_name, last_name )',
+    historySelect: 'id, control_date, responsible_person, formato_codigo, plant_chlorine_residual_checks ( result_ppm ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pcrc_created_by_fkey ( first_name, last_name )',
     historyOrder: [{ column: 'control_date', ascending: false }],
     emptyHeader: () => ({ control_date: todayISO(), responsible_person: '' }),
     validateHeader: h => !h.responsible_person?.trim() ? 'Ingrese el responsable.' : null,
@@ -97,6 +99,8 @@ export default function CloroResidualPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={reloadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de cloro residual registrados aún." />
         ) : (
@@ -120,7 +124,7 @@ export default function CloroResidualPage() {
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
                     Responsable: {c.responsible_person ?? '—'}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                 </div>
               )
@@ -140,11 +144,6 @@ export default function CloroResidualPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            La fecha identifica a este control ya guardado y no se puede cambiar aquí. Para otra fecha, vuelva al historial y use "Editar" o "+ Nuevo control".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Fecha</label>
@@ -185,7 +184,7 @@ export default function CloroResidualPage() {
                         min="0"
                         value={value.resultPpm}
                         onChange={e => updatePoint(point, 'resultPpm', e.target.value)}
-                        style={{ width: '100%', fontSize: 12, color: isLow ? '#dc2626' : undefined, fontWeight: isLow ? 700 : undefined }}
+                        style={{ width: '100%', fontSize: 12, color: isLow ? 'var(--danger)' : undefined, fontWeight: isLow ? 700 : undefined }}
                       />
                     </td>
                     <td>
@@ -213,7 +212,7 @@ export default function CloroResidualPage() {
         </div>
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

@@ -2,12 +2,16 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
 import { useAuthStore } from '../store/authStore'
+import { trackAction } from '../lib/usage'
 import { useConfirm } from '../hooks/useConfirm'
 import { SkeletonList } from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import SearchFilterBar from '../components/SearchFilterBar'
 import DateInput from '../components/DateInput'
 import Icon from '../components/Icon'
+import AuditStamp from '../components/AuditStamp'
+import { AUDIT_COLUMNS } from '../lib/audit'
 
 function formatDate(dateStr) {
   if (!dateStr) return '-'
@@ -33,6 +37,7 @@ export default function CalidadPage() {
   const [receptions, setReceptions] = useState([])
   const [kgUsedMap, setKgUsedMap] = useState({})
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
 
   // Rechazo de calidad por lote
@@ -55,12 +60,9 @@ export default function CalidadPage() {
 
   useEffect(() => { loadData() }, [])
 
-  const toggleDevoluciones = async () => {
-    const next = !showDevoluciones
-    setShowDevoluciones(next)
-    if (next && !devolucionesLoaded) {
-      setLoadingDevoluciones(true)
-      const { data } = await supabase
+  const loadDevoluciones = async () => {
+    setLoadingDevoluciones(true)
+    const { data } = await supabase
         .from('product_returns')
         .select(`
           id, production_batch_id, return_date, quantity_kg, quantity_sacks, return_reason, voided_at,
@@ -68,17 +70,22 @@ export default function CalidadPage() {
         `)
         .eq('cooperative_id', COOPERATIVE.id)
         .order('return_date', { ascending: false })
-      setDevoluciones(data ?? [])
-      setDevolucionesLoaded(true)
-      setLoadingDevoluciones(false)
-    }
+    setDevoluciones(data ?? [])
+    setDevolucionesLoaded(true)
+    setLoadingDevoluciones(false)
+  }
+
+  const toggleDevoluciones = async () => {
+    const next = !showDevoluciones
+    setShowDevoluciones(next)
+    if (next && !devolucionesLoaded) await loadDevoluciones()
   }
 
   const loadData = async () => {
     setLoading(true)
 
     // Recepciones registradas con sus items
-    const { data: receptionsData } = await supabase
+    const { data: receptionsData, error: receptionsErr } = await supabase
       .from('exit_receptions')
       .select(`
         id, received_at, status,
@@ -100,16 +107,25 @@ export default function CalidadPage() {
       .order('received_at', { ascending: false })
 
     // Evaluaciones de calidad (se crean en la recepción, en RecepcionPage.jsx)
-    const { data: evals } = await supabase
+    const { data: evals, error: evalsErr } = await supabase
       .from('quality_evaluations')
-      .select('id, exit_item_id, exit_reception_id, approval_status, rejected_kg, rejection_reason, product_return_id, humidity_pct, impurities_pct, color, sack_condition, appearance, notes, extra_data')
+      .select(`id, exit_item_id, exit_reception_id, approval_status, rejected_kg, rejection_reason, product_return_id, humidity_pct, impurities_pct, color, sack_condition, appearance, notes, extra_data, ${AUDIT_COLUMNS}`)
       .eq('cooperative_id', COOPERATIVE.id)
 
     // Kg ya comprometidos en homogeneizado, para saber cuánto queda libre para rechazar
-    const { data: homoInputs } = await supabase
+    const { data: homoInputs, error: homoErr } = await supabase
       .from('plant_homogenization_inputs')
       .select('source_exit_item_id, quantity_kg')
       .eq('cooperative_id', COOPERATIVE.id)
+
+    // Si falla la de evaluaciones, todos los lotes aparecerían "sin revisar".
+    const loadErr = receptionsErr ?? evalsErr ?? homoErr
+    if (loadErr) {
+      setLoadError(loadErr.message)
+      setLoading(false)
+      return
+    }
+    setLoadError('')
 
     const kgUsed = {}
     for (const h of (homoInputs ?? [])) {
@@ -159,6 +175,7 @@ export default function CalidadPage() {
         notes:                ev.notes ?? '',
         approval_status:      ev.approval_status,
         product_return_id:    ev.product_return_id ?? null,
+        audit:                ev,
       }
     })
   }
@@ -301,6 +318,19 @@ export default function CalidadPage() {
         // anulada (no se borra). Si más adelante se rechaza de nuevo, al
         // no haber ya una devolución activa vinculada, se crea una nueva
         // -- cada rechazo real queda como su propio hecho histórico.
+        // Devolución vinculada a ESTA evaluación, leída de la base (no del
+        // estado del navegador, que puede estar desactualizado). Solo cuenta
+        // si sigue vigente; una anulada no se reutiliza.
+        const { data: evLink, error: evLinkError } = await supabase
+          .from('quality_evaluations')
+          .select('product_return_id, product_returns ( id, voided_at )')
+          .eq('id', r.eval_id)
+          .single()
+        if (evLinkError) throw new Error(`${r.comprobante ?? r.batch_code}: ${evLinkError.message}`)
+        const activeReturnId = evLink?.product_returns && !evLink.product_returns.voided_at
+          ? evLink.product_return_id
+          : null
+
         if (r.status === 'rechazado' && r.production_batch_id) {
           const returnPayload = {
             production_batch_id: r.production_batch_id,
@@ -312,30 +342,12 @@ export default function CalidadPage() {
             return_reason:        r.rejection_reason.trim(),
           }
 
-          // Se pregunta directo a la base si ya hay una devolución activa
-          // para ESTE lote (no se confía en el product_return_id que viaja
-          // en el estado del navegador -- si por lo que sea no se refrescó
-          // a tiempo, terminaba duplicando en vez de actualizar).
-          const { data: activeReturns } = await supabase
-            .from('product_returns')
-            .select('id')
-            .eq('production_batch_id', r.production_batch_id)
-            .eq('cooperative_id', COOPERATIVE.id)
-            .is('voided_at', null)
-            .order('created_at', { ascending: false })
-            .limit(1)
-          const activeReturnId = activeReturns?.[0]?.id ?? null
-
           if (activeReturnId) {
             const { error: returnError } = await supabase
               .from('product_returns')
               .update(returnPayload)
               .eq('id', activeReturnId)
             if (returnError) throw new Error(`${r.comprobante ?? r.batch_code}: ${returnError.message}`)
-
-            if (r.product_return_id !== activeReturnId) {
-              await supabase.from('quality_evaluations').update({ product_return_id: activeReturnId }).eq('id', r.eval_id)
-            }
           } else {
             const { data: newReturn, error: returnError } = await supabase
               .from('product_returns')
@@ -350,19 +362,22 @@ export default function CalidadPage() {
               .eq('id', r.eval_id)
             if (linkError) throw new Error(`${r.comprobante ?? r.batch_code}: ${linkError.message}`)
           }
-        } else if (r.production_batch_id) {
+        } else if (activeReturnId) {
+          // Se revirtió el rechazo: se anula SOLO la devolución de esta
+          // evaluación (queda en la base para auditoría).
           const { error: voidError } = await supabase
             .from('product_returns')
             .update({ voided_at: new Date().toISOString() })
-            .eq('production_batch_id', r.production_batch_id)
-            .eq('cooperative_id', COOPERATIVE.id)
-            .is('voided_at', null)
+            .eq('id', activeReturnId)
           if (voidError) throw new Error(`${r.comprobante ?? r.batch_code}: ${voidError.message}`)
         }
       }
 
       setApprovalModal(null)
+      trackAction('evaluar_calidad')
       loadData()
+      if (showDevoluciones) loadDevoluciones()
+      else setDevolucionesLoaded(false)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -419,9 +434,6 @@ export default function CalidadPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h2 style={{ margin: 0 }}>Calidad — revisión de lotes</h2>
-          <p className="muted small" style={{ margin: '4px 0 0' }}>
-            La condición del saco, humedad e impurezas ya se capturan al recepcionar. Aquí se revisa y, si corresponde, se rechazan kg por lote.
-          </p>
         </div>
         <button className="btn small primary" onClick={toggleDevoluciones} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Icon name={showDevoluciones ? 'chevronUp' : 'chevronDown'} size={14} />
@@ -444,14 +456,14 @@ export default function CalidadPage() {
                 const qtxt = d.quantity_sacks > 0 ? `${d.quantity_sacks} sacos (${Number(d.quantity_kg).toFixed(1)} kg)` : `${Number(d.quantity_kg).toFixed(1)} kg`
                 return (
                   <div key={d.id} style={{
-                    padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0',
+                    padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border-soft)',
                     background: '#fff',
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6,
                   }}>
                     <div>
                       <strong style={{ fontSize: 13 }}>{producer}</strong>
                       <span className="muted small" style={{ marginLeft: 8, fontFamily: 'monospace' }}>G.R: {guiaByBatchId[d.production_batch_id] ?? '—'}</span>
-                      <span style={{ marginLeft: 8, fontFamily: 'monospace', fontWeight: 700, color: 'var(--success)' }}>{comprobanteByBatchId[d.production_batch_id] ?? pb?.batch_code ?? '—'}</span>
+                      <span style={{ marginLeft: 8, fontFamily: 'monospace', fontWeight: 700, color: 'var(--success)' }}>{comprobanteByBatchId[d.production_batch_id] ?? '—'}</span>
                       <span className="muted small" style={{ marginLeft: 8 }}>{formatDate(d.return_date)} · {qtxt}</span>
                       {d.return_reason && <div className="muted small" style={{ marginTop: 2 }}>{d.return_reason}</div>}
                     </div>
@@ -479,6 +491,8 @@ export default function CalidadPage() {
           <SkeletonList count={2} />
           <SkeletonList count={2} />
         </div>
+      ) : loadError ? (
+        <ErrorState message="No se pudieron cargar los lotes de calidad. Revise la conexión e intente de nuevo." onRetry={loadData} />
       ) : (
         <div className="split">
           {/* ── Sin revisar ── */}
@@ -546,17 +560,20 @@ export default function CalidadPage() {
                         <span className={isPartialRejection ? 'tag warn' : statusLabel.className}>
                           {isPartialRejection ? `Rechazo parcial (${Number(l.rejected_kg).toFixed(1)} kg)` : statusLabel.text}
                         </span>
+                        <AuditStamp row={l.audit} />
                       </header>
                       <div className="meta" style={{ marginTop: 6 }}>
                         <div>{l.producer}</div>
                         <div>Recepcionado: {formatDate(l.received_at)} · {l.quantity_kg_received} kg</div>
-                        {l.kg_used > 0 && (
-                          <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 700 }}>
-                            Ya se usaron {l.kg_used} kg de este lote en tamizado — la revisión ya no se puede editar.
-                          </div>
-                        )}
                       </div>
-                      <footer>
+                      {/* Antes era una línea roja larga repetida en cada lote; es un
+                          estado normal (no un error), así que basta una etiqueta. */}
+                      <footer style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        {l.kg_used > 0 && (
+                          <span className="tag info" title={`Ya se usaron ${l.kg_used} kg de este lote en tamizado`}>
+                            Bloqueada: usada en tamizado
+                          </span>
+                        )}
                         <button
                           className="btn small outline"
                           onClick={() => openApproval(l)}
@@ -597,15 +614,12 @@ export default function CalidadPage() {
                   </strong>
                 </div>
               )}
-              <p className="muted small" style={{ margin: '0 0 16px' }}>
-                Elija el resultado de la revisión de este lote.
-              </p>
 
               {rejectionEdits.map((r, i) => {
                 const kg = Number(r.rejected_kg)
                 const isFull = r.status === 'rechazado' && !isNaN(kg) && kg >= r.kg_free
                 const remaining = !isNaN(kg) ? Math.max(0, r.kg_free - kg) : r.kg_free
-                const borderColor = r.status === 'rechazado' ? '#dc2626' : r.status === 'aprobado_con_observaciones' ? 'var(--warning)' : 'var(--border)'
+                const borderColor = r.status === 'rechazado' ? 'var(--danger)' : r.status === 'aprobado_con_observaciones' ? 'var(--warning)' : 'var(--border)'
                 return (
                   <div key={r.eval_id} style={{
                     border: `1.5px solid ${borderColor}`,
@@ -650,8 +664,8 @@ export default function CalidadPage() {
 
                       {r.status === 'aprobado_con_observaciones' && (
                         <div>
-                          <label style={{ fontSize: 11, fontWeight: 600, color: '#b45309', display: 'block', marginBottom: 4 }}>
-                            Observaciones <span style={{ color: '#dc2626' }}>*</span>
+                          <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--warning-strong)', display: 'block', marginBottom: 4 }}>
+                            Observaciones <span style={{ color: 'var(--danger)' }}>*</span>
                           </label>
                           <textarea
                             rows={2}
@@ -665,10 +679,10 @@ export default function CalidadPage() {
 
                       {r.status === 'rechazado' && (
                         <div style={{
-                          background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8,
+                          background: 'var(--danger-bg-soft)', border: '1px solid var(--danger-border-soft)', borderRadius: 8,
                           padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 14,
                         }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
                             Paso 1 de 3 — Cantidad rechazada
                           </div>
 
@@ -707,7 +721,7 @@ export default function CalidadPage() {
                           </div>
 
                           {/* 2. Cuándo se devuelve */}
-                          <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
                             Paso 2 de 3 — Fecha de devolución
                           </div>
                           <div className="field" style={{ margin: 0, maxWidth: 200 }}>
@@ -716,11 +730,11 @@ export default function CalidadPage() {
                           </div>
 
                           {/* 3. Por qué se rechaza */}
-                          <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
                             Paso 3 de 3 — Motivo
                           </div>
                           <div className="field" style={{ margin: 0 }}>
-                            <label>Motivo del rechazo <span style={{ color: '#dc2626' }}>*</span></label>
+                            <label>Motivo del rechazo <span style={{ color: 'var(--danger)' }}>*</span></label>
                             <textarea
                               rows={2}
                               value={r.rejection_reason}
@@ -735,7 +749,7 @@ export default function CalidadPage() {
                 )
               })}
 
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => setApprovalModal(null)} disabled={savingApproval}>Cancelar</button>

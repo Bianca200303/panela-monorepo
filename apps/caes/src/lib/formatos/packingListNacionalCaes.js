@@ -4,6 +4,7 @@ import { COOPERATIVE } from '../config'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
 import { loteLabel, loteKg, PACKAGING_TYPE_LABELS } from '@panela/core/lib/loteHelpers'
 import { PRINT_STYLES, metaRow, fmtDate, fmtNum, resolveContainerContext, escapeHtml } from '@panela/core/lib/formatos/shared'
+import { fetchTramos, tramoFinal, tramosPorLote, tramoRuta } from '@panela/core/lib/formatos/tramos'
 
 export const FORMAT_TITLE_PACKING_LIST_NACIONAL_CAES = 'PACKING LIST-NACIONAL'
 
@@ -28,7 +29,7 @@ export const FORMAT_TITLE_PACKING_LIST_NACIONAL_CAES = 'PACKING LIST-NACIONAL'
 export async function fetchPackingListNacionalCaesData(container, orders) {
   const { data: packingList } = await supabase
     .from('plant_packing_list_nacional_caes')
-    .select('packing_list_numero, guia_tramo_interno, guia_tramo_final')
+    .select('packing_list_numero')
     .eq('container_id', container.id)
     .maybeSingle()
 
@@ -41,6 +42,13 @@ export async function fetchPackingListNacionalCaesData(container, orders) {
         .order('envasado_registered_at')
     : { data: [] }
 
+  // Guías: SOLO de los tramos (Control de Unidad de Transporte). Encabezado
+  // = GR CAES del tramo marcado como final; cada lote = GR CAES de los demás
+  // tramos en que viajó (en el papel, la del tramo interno).
+  const tramos = await fetchTramos(container?.id)
+  const final = tramoFinal(tramos)
+  const porLote = tramosPorLote(tramos)
+
   const rows = (batches ?? []).map((b, idx) => ({
     n: idx + 1,
     // envasado_registered_at es timestamptz -- fmtDate espera "YYYY-MM-DD",
@@ -51,6 +59,7 @@ export async function fetchPackingListNacionalCaesData(container, orders) {
     kg: loteKg(b),
     unidades: b.packaging_count,
     tipoUnidad: PACKAGING_TYPE_LABELS[b.packaging_type] ?? b.packaging_type ?? '—',
+    guiaLote: (porLote[b.id] ?? []).filter(t => !t.es_tramo_final).map(t => t.guia_remision).filter(Boolean).join(', ') || null,
   }))
   const totalKg = rows.reduce((s, r) => s + r.kg, 0)
   const totalUnidades = rows.reduce((s, r) => s + Number(r.unidades ?? 0), 0)
@@ -65,11 +74,8 @@ export async function fetchPackingListNacionalCaesData(container, orders) {
     container,
     packingListNumero: packingList?.packing_list_numero ?? null,
     facturaComercial: container?.extra_data?.factura_comercial ?? null,
-    // Header = tramo final (a destino); fila de tabla = tramo interno
-    // (Montero -> ciudad) -- coincide con cómo el papel real separa ambas
-    // guías.
-    guiaTramoFinal: packingList?.guia_tramo_final ?? null,
-    guiaTramoInterno: packingList?.guia_tramo_interno ?? null,
+    guiaTramoFinal: final?.guia_remision ?? null,
+    tramos,
     clientName,
     fechaVencimiento,
     rows,
@@ -79,7 +85,7 @@ export async function fetchPackingListNacionalCaesData(container, orders) {
 }
 
 export function buildPrintHTMLPackingListNacionalCaes(data) {
-  const { container, packingListNumero, facturaComercial, guiaTramoFinal, guiaTramoInterno, clientName, fechaVencimiento, rows, totalKg, totalUnidades } = data
+  const { container, packingListNumero, facturaComercial, guiaTramoFinal, tramos = [], clientName, fechaVencimiento, rows, totalKg, totalUnidades } = data
   const coopName = COOPERATIVE?.name ?? ''
 
   const rowsHTML = rows.map(r => `<tr>
@@ -89,7 +95,7 @@ export function buildPrintHTMLPackingListNacionalCaes(data) {
       <td style="text-align:right">${fmtNum(r.kg)}</td>
       <td style="text-align:center">${r.unidades ?? ''}</td>
       <td>${escapeHtml(r.tipoUnidad)}</td>
-      <td style="text-align:center">${escapeHtml(guiaTramoInterno) ?? '—'}</td>
+      <td style="text-align:center">${escapeHtml(r.guiaLote) ?? '—'}</td>
     </tr>`).join('')
 
   return `<!DOCTYPE html>
@@ -133,6 +139,18 @@ export function buildPrintHTMLPackingListNacionalCaes(data) {
   </table>
   <p style="font-size:9px;margin:4px 0 0;color:#555">Total Peso Neto (kg): ${fmtNum(totalKg)}</p>
 
+  ${tramos.length > 0 ? `
+  <p style="font-size:11px;font-weight:700;margin:10px 0 4px">Guías de remisión por tramo</p>
+  <table class="formato-table" style="width:100%">
+    <thead><tr><th>Fecha</th><th style="text-align:left">Recorrido</th><th>GR CAES</th><th>GR transportista</th></tr></thead>
+    <tbody>${tramos.map(t => `<tr>
+      <td style="text-align:center">${t.control_date ? fmtDate(t.control_date) : '—'}</td>
+      <td>${escapeHtml(tramoRuta(t))}${t.es_tramo_final ? ' (final)' : ''}</td>
+      <td style="text-align:center">${escapeHtml(t.guia_remision) ?? '—'}</td>
+      <td style="text-align:center">${escapeHtml(t.guia_remision_transportista) ?? 'Pendiente'}</td>
+    </tr>`).join('')}</tbody>
+  </table>` : ''}
+
   <div class="formato-firmas" style="margin-top:50px">
     <div class="firma-bloque">
       <div class="firma-linea"></div>
@@ -149,7 +167,7 @@ export function packingListNacionalCaesPdf(data) {
 }
 
 export function packingListNacionalCaesExcel(data) {
-  const { container, packingListNumero, facturaComercial, guiaTramoFinal, guiaTramoInterno, clientName, fechaVencimiento, rows, totalKg, totalUnidades } = data
+  const { container, packingListNumero, facturaComercial, guiaTramoFinal, tramos = [], clientName, fechaVencimiento, rows, totalKg, totalUnidades } = data
   const aoa = [
     [FORMAT_TITLE_PACKING_LIST_NACIONAL_CAES],
     ['N° de documento:', packingListNumero ?? ''],
@@ -159,8 +177,14 @@ export function packingListNacionalCaesExcel(data) {
     ['Fecha de Vencimiento:', fechaVencimiento ?? ''],
     [],
     ['N°', 'Fecha de Producción', 'N° Lote', 'Cantidad (kg)', 'Unidades', 'Tipo de Unidad', 'Guía de Remisión (Montero → destino)'],
-    ...rows.map(r => [r.n, r.fechaProduccion ?? '', r.lote, Number(r.kg).toFixed(2), r.unidades ?? '', r.tipoUnidad, guiaTramoInterno ?? '']),
+    ...rows.map(r => [r.n, r.fechaProduccion ?? '', r.lote, Number(r.kg).toFixed(2), r.unidades ?? '', r.tipoUnidad, r.guiaLote ?? '']),
     ['', '', 'TOTAL', Number(totalKg).toFixed(2), totalUnidades, '', ''],
+    ...(tramos.length > 0 ? [
+      [],
+      ['Guías de remisión por tramo'],
+      ['Fecha', 'Recorrido', 'GR CAES', 'GR transportista'],
+      ...tramos.map(t => [t.control_date ?? '', `${tramoRuta(t)}${t.es_tramo_final ? ' (final)' : ''}`, t.guia_remision ?? '', t.guia_remision_transportista ?? 'Pendiente']),
+    ] : []),
   ]
 
   const ws = XLSX.utils.aoa_to_sheet(aoa)

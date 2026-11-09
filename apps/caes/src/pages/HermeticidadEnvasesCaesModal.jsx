@@ -1,10 +1,13 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
 import { loteLabel } from '@panela/core/lib/loteHelpers'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 
 // Control de Hermeticidad de Envases (CAESP-PP-BPM-RE-CPR-007) -- SOLO
 // CAES. Modal por lote (antes era un tab suelto en "Controles de planta")
@@ -41,14 +44,17 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_container_tightness_control_caes')
-      .select('id, control_date, tamano_muestra, producto_conforme, producto_no_conforme, registered_by:web_users!pctcc_created_by_fkey ( first_name, last_name )')
+      .select('id, control_date, tamano_muestra, producto_conforme, producto_no_conforme, audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pctcc_created_by_fkey ( first_name, last_name )')
       .eq('plant_batch_id', plantBatch.id)
       .order('control_date', { ascending: false })
     setRows(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -125,6 +131,7 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -141,11 +148,13 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
           {view === 'history' ? (
             <>
               <h3 style={{ margin: '0 0 4px' }}>Hermeticidad de Envases</h3>
-              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)} · {plantBatch.brand}</p>
+              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)}{plantBatch.brand ? ` · ${plantBatch.brand}` : ''}</p>
               <button className="btn small primary" style={{ marginBottom: 12 }} onClick={startNew}>+ Nuevo registro</button>
 
               {loadingHistory ? (
                 <SkeletonList count={2} lines={2} />
+              ) : historyError ? (
+                <ErrorState onRetry={loadHistory} />
               ) : rows.length === 0 ? (
                 <EmptyState message="No hay registros de hermeticidad de envases para este lote aún." />
               ) : (
@@ -166,7 +175,7 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
                           </div>
                         </div>
                         <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
-                          {r.registered_by && `Registrado por: ${r.registered_by.first_name} ${r.registered_by.last_name}`}
+                          <AuditStamp row={r} />
                         </div>
                       </div>
                     )
@@ -177,7 +186,7 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
           ) : (
             <>
               <h3 style={{ margin: '0 0 4px' }}>{editingId ? 'Editar' : 'Nuevo'} registro</h3>
-              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)} · {plantBatch.brand}</p>
+              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)}{plantBatch.brand ? ` · ${plantBatch.brand}` : ''}</p>
 
               <div className="grid" style={{ gap: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
@@ -245,7 +254,7 @@ export default function HermeticidadEnvasesCaesModal({ plantBatch, webUser, onCl
               )}
             </>
           )}
-          {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
         </div>
         <div className="modal-actions">
           <button className="btn small" onClick={view === 'form' ? () => setView('history') : onClose} disabled={saving}>

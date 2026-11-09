@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
@@ -6,6 +7,8 @@ import { CLORO_CAES_MIN_PPM, CLORO_CAES_MAX_PPM } from '../lib/formatos/cloroRes
 import { getCoopCode } from '@panela/core/lib/formatos/shared'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 import PeriodExistsBanner from '@panela/core/components/PeriodExistsBanner'
 
@@ -22,8 +25,11 @@ import PeriodExistsBanner from '@panela/core/components/PeriodExistsBanner'
 let rowCounter = 0
 function newRowKey() { return `row-${++rowCounter}` }
 
+// Valores habituales de la cloración: 2 ppm, 20 L de agua, 0.53 ml de cloro.
+// Cada fila nueva arranca con ellos; se corrigen a mano si cambian.
+const PREP_DEFAULTS = { concentracion: '2', aguaL: '20', cloroMl: '0.53' }
 function emptyPrepRow() {
-  return { key: newRowKey(), hora: '', concentracion: '', aguaL: '', cloroMl: '', responsable: '', observaciones: '' }
+  return { key: newRowKey(), hora: '', ...PREP_DEFAULTS, responsable: '', observaciones: '' }
 }
 function emptyMonitoringRow() {
   return { key: newRowKey(), hora: '', punto: '', ppm: '', responsable: '', accionesCorrectivas: '' }
@@ -55,20 +61,23 @@ export default function CloroResidualCaesPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_chlorine_controls_caes')
       .select(`
         id, control_date, observations, formato_codigo,
         plant_chlorine_prep_events_caes ( id ),
         plant_chlorine_monitoring_events_caes ( result_ppm ),
-        registered_by:web_users!pccc_created_by_fkey ( first_name, last_name )
+        audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pccc_created_by_fkey ( first_name, last_name )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
       .limit(50)
     setControls(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -143,7 +152,10 @@ export default function CloroResidualCaesPage() {
   }
 
   function isPrepRowBlank(r) {
-    return !r.hora && !r.concentracion && !r.aguaL && !r.cloroMl && !r.responsable.trim() && !r.observaciones.trim()
+    // Una fila con solo los valores por defecto (sin hora, responsable ni
+    // observaciones) cuenta como vacía: no se guarda.
+    const onlyDefault = (k) => !r[k] || r[k] === PREP_DEFAULTS[k]
+    return !r.hora && onlyDefault('concentracion') && onlyDefault('aguaL') && onlyDefault('cloroMl') && !r.responsable.trim() && !r.observaciones.trim()
   }
   function isMonitoringRowBlank(r) {
     return !r.hora && !r.punto.trim() && !r.ppm && !r.responsable.trim() && !r.accionesCorrectivas.trim()
@@ -213,6 +225,7 @@ export default function CloroResidualCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -236,6 +249,8 @@ export default function CloroResidualCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de cloro registrados aún." />
         ) : (
@@ -257,7 +272,7 @@ export default function CloroResidualCaesPage() {
                   </div>
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
-                    {c.registered_by && `Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} />
                   </div>
                   {c.observations && <div className="meta" style={{ fontSize: 12 }}>Observaciones: {c.observations}</div>}
                 </div>
@@ -373,7 +388,7 @@ export default function CloroResidualCaesPage() {
                       <input
                         type="number" step="0.01" min="0" value={r.ppm}
                         onChange={e => updateMonitoringRow(r.key, 'ppm', e.target.value)}
-                        style={{ width: '100%', fontSize: 12, color: outOfRange ? '#dc2626' : undefined, fontWeight: outOfRange ? 700 : undefined }}
+                        style={{ width: '100%', fontSize: 12, color: outOfRange ? 'var(--danger)' : undefined, fontWeight: outOfRange ? 700 : undefined }}
                       />
                     </td>
                     <td><input type="text" value={r.responsable} onChange={e => updateMonitoringRow(r.key, 'responsable', e.target.value)} style={{ width: '100%', fontSize: 12 }} /></td>
@@ -402,7 +417,7 @@ export default function CloroResidualCaesPage() {
       </div>
       </>}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

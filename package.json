@@ -8,7 +8,9 @@
     "apps/*"
   ],
   "scripts": {
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "reporte-uso": "node scripts/reporte-uso.mjs",
+    "reporte-bitacora": "node scripts/reporte-bitacora.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.1",

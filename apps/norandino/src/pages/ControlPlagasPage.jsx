@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
@@ -6,6 +7,8 @@ import { RODENT_TRAPS, RODENT_DEVICE_TYPE_LABELS, LIGHT_TRAPS, INSECT_SPECIES } 
 import { getCoopCode } from '@panela/core/lib/formatos/shared'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 
 // Control de Plagas (SIG-GIA-RG-007) -- registro por FECHA exacta,
 // independiente de cualquier orden/lote: 1 control por fecha, con 2 tipos
@@ -49,7 +52,7 @@ function buildDefaultLightChecks() {
 
 function ToggleButton({ active, tone, onClick, children }) {
   const style = active
-    ? (tone === 'bad' ? { color: '#991b1b', background: '#fef2f2', borderColor: '#991b1b' } : { color: '#166534', background: '#f0fdf4', borderColor: '#166534' })
+    ? (tone === 'bad' ? { color: 'var(--danger-text)', background: 'var(--danger-bg-soft)', borderColor: 'var(--danger-text)' } : { color: 'var(--success-text)', background: 'var(--success-bg)', borderColor: 'var(--success-text)' })
     : { color: '#999', background: '#fff' }
   return (
     <button type="button" onClick={onClick} style={{ width: 24, height: 24, borderRadius: 4, border: '1px solid var(--border)', cursor: 'pointer', fontWeight: 700, fontSize: 11, ...style }}>
@@ -81,15 +84,18 @@ export default function ControlPlagasPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_pest_controls')
-      .select('id, control_date, responsible_person, formato_codigo, ambientes_equipo_personal_ok, plant_rodent_trap_checks ( atrapados ), plant_light_trap_checks ( id ), registered_by:web_users!ppc_created_by_fkey ( first_name, last_name )')
+      .select('id, control_date, responsible_person, formato_codigo, ambientes_equipo_personal_ok, plant_rodent_trap_checks ( atrapados ), plant_light_trap_checks ( id ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!ppc_created_by_fkey ( first_name, last_name )')
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
       .limit(50)
     setControls(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -250,6 +256,7 @@ export default function ControlPlagasPage() {
         if (e2) throw new Error(e2.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -270,6 +277,8 @@ export default function ControlPlagasPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de plagas registrados aún." />
         ) : (
@@ -288,7 +297,7 @@ export default function ControlPlagasPage() {
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
                     Responsable: {c.responsible_person ?? '—'}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                 </div>
               )
@@ -338,7 +347,7 @@ export default function ControlPlagasPage() {
             <tbody>
               {['jaula', 'trampa_goma'].map(deviceType => (
                 <Fragment key={deviceType}>
-                  <tr><td colSpan={7} style={{ background: '#f3f4f6', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{RODENT_DEVICE_TYPE_LABELS[deviceType]}</td></tr>
+                  <tr><td colSpan={7} style={{ background: 'var(--surface-sunken)', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{RODENT_DEVICE_TYPE_LABELS[deviceType]}</td></tr>
                   {RODENT_TRAPS.filter(t => t.deviceType === deviceType).map(trap => {
                     const v = rodentChecks[trap.code] ?? {}
                     return (
@@ -434,7 +443,7 @@ export default function ControlPlagasPage() {
           ambientes_equipo_personal_ok/observaciones en plant_pest_controls)
           -- sin este bloque nunca se completan, así que no pasa nada. */}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

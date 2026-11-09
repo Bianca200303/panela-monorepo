@@ -1,8 +1,9 @@
+import { Skeleton, SkeletonList } from '../components/Skeleton'
+import ErrorState from '../components/ErrorState'
 import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
-import FormatosPage from './FormatosPage'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, ReferenceLine,
@@ -157,7 +158,7 @@ function KpiCard({ icon, value, label, sub, color = 'var(--primary)', alertSub =
 function TooltipToneladas({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
-    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 12px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,.1)' }}>
+    <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,.1)' }}>
       <strong style={{ display: 'block', marginBottom: 4 }}>{label}</strong>
       {payload.map((p, i) => (
         <div key={i} style={{ color: p.color }}>
@@ -172,9 +173,9 @@ function TooltipCalidad({ active, payload, label }) {
   if (!active || !payload?.length) return null
   const val = payload[0]?.value
   return (
-    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 12px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,.1)' }}>
+    <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,.1)' }}>
       <strong style={{ display: 'block', marginBottom: 2 }}>{label}</strong>
-      <span style={{ color: val > HUMIDITY_LIMIT ? '#dc2626' : 'var(--success)' }}>
+      <span style={{ color: val > HUMIDITY_LIMIT ? 'var(--danger)' : 'var(--success)' }}>
         Humedad prom.: <strong>{fmt(val)}%</strong>
       </span>
       <div style={{ color: '#000', marginTop: 2 }}>({payload[0]?.payload?.muestras} evaluacion{payload[0]?.payload?.muestras !== 1 ? 'es' : ''})</div>
@@ -191,7 +192,7 @@ export default function ReportesPage() {
   const [searchParams] = useSearchParams()
   const [loading, setLoading]           = useState(true)
   const [error, setError]               = useState('')
-  const [tab, setTab]                   = useState(searchParams.get('tab') ?? 'ordenes')
+  const [tab, setTab]                   = useState(searchParams.get('tab') === 'calidad' ? 'calidad' : 'ordenes')
   const [period, setPeriod]             = useState('all')
   const [hoveredMarker, setHoveredMarker] = useState(null)
 
@@ -241,6 +242,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       ])
       if (ordersRes.error)  throw ordersRes.error
       if (qualityRes.error) throw qualityRes.error
+      if (receptionsRes.error) throw receptionsRes.error
       setRawOrders(ordersRes.data ?? [])
       setRawQuality(qualityRes.data ?? [])
       setRawReceptions(receptionsRes.data ?? [])
@@ -410,8 +412,23 @@ ${BUNQUE_ALLOCATIONS_SELECT}
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  if (loading) return <p className="muted">Cargando reportes...</p>
-  if (error)   return <p style={{ color: '#dc2626' }}>Error: {error}</p>
+  // Esqueleto con la forma real de la página (KPIs + gráficos), en vez de
+  // un texto "Cargando..." que hace saltar el layout al terminar.
+  if (loading) return (
+    <div>
+      <h2 style={{ margin: '0 0 16px' }}>Reportes</h2>
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        {Array.from({ length: 4 }).map((_, i) => <div key={i} className="kpi-card"><Skeleton width="50%" /><Skeleton width="35%" height={24} /></div>)}
+      </div>
+      <SkeletonList count={2} lines={4} />
+    </div>
+  )
+  if (error) return (
+    <div>
+      <h2 style={{ margin: '0 0 16px' }}>Reportes</h2>
+      <ErrorState message="No se pudieron cargar los reportes. Revise la conexión e intente de nuevo." onRetry={load} />
+    </div>
+  )
 
   const {
     tamizada, descarte, recibido, rendimiento, merma, maxMermaOrder,
@@ -551,7 +568,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 <XAxis dataKey="label" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                 {/* FIX #4: eje Y siempre en toneladas */}
                 <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={tickT} />
-                <Tooltip content={<TooltipToneladas />} cursor={{ fill: '#f3f4f6' }} />
+                <Tooltip content={<TooltipToneladas />} cursor={{ fill: 'var(--surface-sunken)' }} />
                 <Bar dataKey="recibido"  name="MP recibida"  fill="#f59e0b" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="producido" name="Panela prod." fill="var(--success)" radius={[3, 3, 0, 0]} />
               </BarChart>
@@ -570,7 +587,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             </h4>
             {hoveredMarker ? (
               <div style={{ fontSize: 12, textAlign: 'right' }}>
-                <strong style={{ color: '#0f4c5c' }}>{hoveredMarker.market}</strong>
+                <strong style={{ color: 'var(--primary)' }}>{hoveredMarker.market}</strong>
                 <div style={{ color: '#000' }}>
                   {(hoveredMarker.kg / 1000).toFixed(2)} t · {hoveredMarker.ordenes} orden{hoveredMarker.ordenes !== 1 ? 'es' : ''}
                   {hoveredMarker.completadas < hoveredMarker.ordenes && (
@@ -639,7 +656,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 {/* FIX #4: eje X siempre en toneladas */}
                 <XAxis type="number" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={tickT} />
                 <YAxis type="category" dataKey="market" tick={{ fontSize: 11 }} width={82} axisLine={false} tickLine={false} />
-                <Tooltip content={<TooltipToneladas />} cursor={{ fill: '#f3f4f6' }} />
+                <Tooltip content={<TooltipToneladas />} cursor={{ fill: 'var(--surface-sunken)' }} />
                 <Bar dataKey="kg" name="Panela (kg)" fill="#0f4c5c" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -652,7 +669,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             Tendencia de calidad
             <span className="muted" style={{ fontWeight: 400, fontSize: 12, marginLeft: 6 }}>— humedad promedio mensual</span>
           </h4>
-          <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 10 }}>
             Límite máximo: {HUMIDITY_LIMIT}%
             {!qualityHasLine && qualityTrend.length > 0 && (
               <span className="muted" style={{ color: '#000', marginLeft: 8 }}>
@@ -675,7 +692,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   y={HUMIDITY_LIMIT}
                   stroke="#dc2626"
                   strokeDasharray="5 4"
-                  label={{ value: `límite ${HUMIDITY_LIMIT}%`, position: 'insideTopRight', fontSize: 10, fill: '#dc2626' }}
+                  label={{ value: `límite ${HUMIDITY_LIMIT}%`, position: 'insideTopRight', fontSize: 10, fill: 'var(--danger)' }}
                 />
                 <Line
                   type="monotone"
@@ -699,7 +716,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         {[
           ['ordenes',  'Órdenes de producción'],
           ['calidad',  'Evaluaciones de calidad'],
-          ['formatos', 'Formatos de Campo'],
         ].map(([v, lbl]) => (
           <button key={v} className={`btn small ${tab === v ? 'primary' : 'outline'}`} onClick={() => setTab(v)}>{lbl}</button>
         ))}
@@ -746,7 +762,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                       <td>{producido > 0 ? fmt(producido, 1) : <span className="muted">—</span>}</td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ width: 56, height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
+                          <div style={{ width: 56, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{ width: `${pct}%`, height: '100%', background: pct >= 100 ? 'var(--success)' : 'var(--primary)', borderRadius: 3 }} />
                           </div>
                           <span style={{ fontSize: 11, color: '#000' }}>{pct.toFixed(0)}%</span>
@@ -754,7 +770,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                       </td>
                       <td>
                         {mermaO != null
-                          ? <span style={{ color: mermaO > MERMA_LIMIT ? '#dc2626' : 'var(--success)', fontWeight: 600 }}>{fmt(mermaO)}%</span>
+                          ? <span style={{ color: mermaO > MERMA_LIMIT ? 'var(--danger)' : 'var(--success)', fontWeight: 600 }}>{fmt(mermaO)}%</span>
                           : <span className="muted">—</span>}
                       </td>
                       <td>
@@ -783,7 +799,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 <span className="muted"> dentro del límite</span>
               </div>
               <div style={{ fontSize: 13 }}>
-                <strong style={{ color: '#dc2626', fontSize: 18 }}>
+                <strong style={{ color: 'var(--danger)', fontSize: 18 }}>
                   {quality.filter(q => Number(q.humidity_pct) > HUMIDITY_LIMIT).length}
                 </strong>
                 <span className="muted"> sobre el límite ({HUMIDITY_LIMIT}%)</span>
@@ -823,7 +839,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                       <td><strong>{ev.exit_items?.item_document_number ?? pb?.batch_code ?? '—'}</strong></td>
                       <td>{modName}</td>
                       <td>{producer}</td>
-                      <td style={{ color: over ? '#dc2626' : 'var(--success)', fontWeight: 600 }}>
+                      <td style={{ color: over ? 'var(--danger)' : 'var(--success)', fontWeight: 600 }}>
                         {fmt(ev.humidity_pct)}{over && <span style={{ marginLeft: 4, fontSize: 11 }}>↑</span>}
                       </td>
                       <td>{fmt(ev.impurities_pct)}</td>
@@ -838,10 +854,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           </div>
         </div>
       )}
-
-      {/* ── Tab: Formatos ─────────────────────────────────────────────────────── */}
-      {tab === 'formatos' && <FormatosPage />}
-
     </div>
   )
 }

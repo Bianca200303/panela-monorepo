@@ -5,6 +5,7 @@ import { loteLabel } from '../lib/loteHelpers'
 import { getLoteLabel, getLoteLabelLower } from '../lib/labels'
 import { useConfirm } from '../hooks/useConfirm'
 import { SkeletonList } from '../components/Skeleton'
+import { fetchTramos, summarizeTramos } from '../lib/formatos/tramos'
 
 // Formulario de "Registrar carga" -- Packing List (COA-GCA-RG-001). Distinto
 // de "Registrar despacho" (Orden de Salida, COA-OIM-RG-007): son 2
@@ -36,6 +37,8 @@ function emptyForm() {
     tara_kg: '', payload_kg: '', placa_camion: '', placa_carreta: '',
     precinto_inicial: '', precinto_linea: '', precinto_norandino: '', hora_inicio: '', hora_fin: '',
     documento_number: '',
+    // Fecha de carga (Packing List de exportación CAES): arranca en hoy.
+    fecha_carga: new Date().toLocaleDateString('en-CA'),
     // Checklist vehículo/contenedor -- default según polaridad de cada ítem
     // (mismo criterio de "arranca marcado en el estado bueno" que el resto
     // de los checklists del sistema).
@@ -62,10 +65,10 @@ function ToggleYesNo({ value, onChange, badWhenTrue }) {
   return (
     <div style={{ display: 'flex', gap: 4 }}>
       <button type="button" className={`btn small ${value === true ? 'primary' : 'outline'}`}
-        style={value === true && badWhenTrue ? { background: '#fee2e2', borderColor: '#dc2626', color: '#dc2626' } : undefined}
+        style={value === true && badWhenTrue ? { background: 'var(--danger-bg)', borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}
         onClick={() => onChange(true)}>SI</button>
       <button type="button" className={`btn small ${value === false ? 'primary' : 'outline'}`}
-        style={value === false && !badWhenTrue ? { background: '#fee2e2', borderColor: '#dc2626', color: '#dc2626' } : undefined}
+        style={value === false && !badWhenTrue ? { background: 'var(--danger-bg)', borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}
         onClick={() => onChange(false)}>NO</button>
     </div>
   )
@@ -73,6 +76,13 @@ function ToggleYesNo({ value, onChange, badWhenTrue }) {
 
 export default function ContainerLoadingModal({ container, orders, webUser, onClose, onSaved }) {
   const COOPERATIVE = useCooperative()
+  // CAES tiene Control de Unidad de Transporte: la placa se toma de sus tramos.
+  const placaDesdeTramos = !!COOPERATIVE?.features?.ventaNacionalExportacion
+  const [placasTramos, setPlacasTramos] = useState('')
+  useEffect(() => {
+    if (!placaDesdeTramos) return
+    fetchTramos(container.id).then(t => setPlacasTramos(summarizeTramos(t).placas.join(', '))).catch(() => {})
+  }, [placaDesdeTramos, container.id])
   const LOTE_LABEL = getLoteLabel(COOPERATIVE, orders?.[0])
   const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, orders?.[0])
   const { confirm, dialog: confirmDialog } = useConfirm()
@@ -166,6 +176,9 @@ export default function ContainerLoadingModal({ container, orders, webUser, onCl
         if (payload[k] === '') payload[k] = null
       }
       if (payload.hora_inicio === '') payload.hora_inicio = null
+      if (payload.fecha_carga === '') payload.fecha_carga = null
+      // CAES: la placa vive solo en el tramo; no se guarda una segunda copia aquí.
+      if (placaDesdeTramos) { payload.placa_camion = null; payload.placa_carreta = null }
       if (payload.hora_fin === '') payload.hora_fin = null
 
       const { data: updated, error: updErr } = await supabase
@@ -278,7 +291,7 @@ export default function ContainerLoadingModal({ container, orders, webUser, onCl
                 <label>Responsable</label>
                 <input type="text" value={responsiblePerson} onChange={e => setResponsiblePerson(e.target.value)} placeholder="Nombre de quien completa el registro" />
               </div>
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           ) : (
             <>
@@ -295,13 +308,25 @@ export default function ContainerLoadingModal({ container, orders, webUser, onCl
                   <div className="field" style={{ margin: 0 }}><label>Payload (kg)</label><input type="number" disabled={!isOpen} value={form.payload_kg} onChange={e => updateForm('payload_kg', e.target.value)} /></div>
                 </div>
                 <div className="grid" style={{ gap: 8 }}>
-                  <div className="field" style={{ margin: 0 }}><label>Placa de camión</label><input type="text" disabled={!isOpen} value={form.placa_camion} onChange={e => updateForm('placa_camion', e.target.value)} /></div>
-                  <div className="field" style={{ margin: 0 }}><label>Placa de carreta</label><input type="text" disabled={!isOpen} value={form.placa_carreta} onChange={e => updateForm('placa_carreta', e.target.value)} /></div>
+                  {placaDesdeTramos ? (
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>Placa (camión / carreta)</label>
+                      <span className="small">{placasTramos || <span className="muted">Se registra en "Control de unidad de transporte"</span>}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="field" style={{ margin: 0 }}><label>Placa de camión</label><input type="text" disabled={!isOpen} value={form.placa_camion} onChange={e => updateForm('placa_camion', e.target.value)} /></div>
+                      <div className="field" style={{ margin: 0 }}><label>Placa de carreta</label><input type="text" disabled={!isOpen} value={form.placa_carreta} onChange={e => updateForm('placa_carreta', e.target.value)} /></div>
+                    </>
+                  )}
                 </div>
                 <div className="grid" style={{ gap: 8 }}>
                   <div className="field" style={{ margin: 0 }}><label>Precinto inicial</label><input type="text" disabled={!isOpen} value={form.precinto_inicial} onChange={e => updateForm('precinto_inicial', e.target.value)} /></div>
                   <div className="field" style={{ margin: 0 }}><label>Precinto de línea</label><input type="text" disabled={!isOpen} value={form.precinto_linea} onChange={e => updateForm('precinto_linea', e.target.value)} /></div>
                   <div className="field" style={{ margin: 0 }}><label>{COOPERATIVE?.features?.precintoPropioLabel ?? 'Precinto propio'}</label><input type="text" disabled={!isOpen} value={form.precinto_norandino} onChange={e => updateForm('precinto_norandino', e.target.value)} /></div>
+                  {COOPERATIVE?.features?.ventaNacionalExportacion && (
+                    <div className="field" style={{ margin: 0 }}><label>Fecha de carga</label><input type="date" disabled={!isOpen} value={form.fecha_carga} onChange={e => updateForm('fecha_carga', e.target.value)} /></div>
+                  )}
                   <div className="field" style={{ margin: 0 }}><label>Hora inicio</label><input type="time" disabled={!isOpen} value={form.hora_inicio} onChange={e => updateForm('hora_inicio', e.target.value)} /></div>
                   <div className="field" style={{ margin: 0 }}><label>Hora fin</label><input type="time" disabled={!isOpen} value={form.hora_fin} onChange={e => updateForm('hora_fin', e.target.value)} /></div>
                 </div>
@@ -383,7 +408,7 @@ export default function ContainerLoadingModal({ container, orders, webUser, onCl
                       <label>{LOTE_LABEL}</label>
                       <select value={palletForm.plant_batch_id} onChange={e => setPalletForm(f => ({ ...f, plant_batch_id: e.target.value }))}>
                         <option value="">Sin {LOTE_LABEL_LOWER}</option>
-                        {batches.map(b => <option key={b.id} value={b.id}>{loteLabel(b)} — {b.brand}</option>)}
+                        {batches.map(b => <option key={b.id} value={b.id}>{loteLabel(b)}{b.brand ? ` — ${b.brand}` : ''}</option>)}
                       </select>
                     </div>
                     <div className="field" style={{ margin: 0, width: 100 }}><label>% Humedad</label><input type="number" step="0.1" min="0" value={palletForm.humidity_pct} onChange={e => setPalletForm(f => ({ ...f, humidity_pct: e.target.value }))} /></div>
@@ -427,7 +452,7 @@ export default function ContainerLoadingModal({ container, orders, webUser, onCl
                 <textarea rows={2} disabled={!isOpen} value={form.final_observations} onChange={e => updateForm('final_observations', e.target.value)} placeholder="Opcional" />
               </div>
 
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           )}
         </div>

@@ -1,6 +1,7 @@
-import { PRINT_STYLES, fmtDate, fmtNum, buildFirmasHTML, escapeHtml } from './shared'
+import { supabase } from '../supabase'
+import { escapeHtml, fmtDate, fmtNum } from './shared'
+import { fetchFieldContextForOrder, buildCampoDocHTML, campoSinRegistrosHTML, campoExcelHeader, writeCampoExcel, producerName } from './campoOrden'
 
-export const FORMAT_TYPE_FCMPTPH = 'FCMPTPH'
 export const FORMAT_TITLE_FCMPTPH = 'FORMATO DE CONTROL DE MATERIA PRIMA, PRODUCCIÓN, pH Y TEMPERATURA'
 
 function buildLoteBlocksHTML(batches, allCerts) {
@@ -102,47 +103,87 @@ function buildLoteBlocksHTML(batches, allCerts) {
   }).join('<hr style="border:none;border-top:2px dashed #ccc;margin:20px 0">')
 }
 
-export function buildFcmtphBatchesHTML(batches, allCerts) {
-  return `<style>${PRINT_STYLES}</style><div>${buildLoteBlocksHTML(batches, allCerts)}</div>`
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Los lotes de campo que alimentaron la orden (ver campoOrden.js), con el
+// mismo cuerpo que la versión por módulo/período de Reportes. Las columnas
+// de certificación ("Calidad de la caña") son el catálogo completo de la
+// cooperativa, igual que en Reportes.
+export async function fetchFcmtphOrdenData(cooperative, order) {
+  const ctx = await fetchFieldContextForOrder(cooperative, order)
+  if (ctx.prodBatchIds.length === 0) return { certNames: ctx.certNames, batches: [], allCerts: [] }
+
+  const [batchesRes, phRes, tempRes, certsRes] = await Promise.all([
+    supabase.from('production_batches')
+      .select(`id, batch_code, harvest_date, process_date, cane_kg, juice_liters, panela_kg, confitillo_kg,
+        efficiency_percentage, porcentaje_extraccion, cane_density, cachaza_percentage, observations,
+        producers ( first_name, last_name, is_member, appagrop_code, coop_modules ( name ) ),
+        plots ( name, code ),
+        production_batch_certs ( batch_certs ( id, name ) )`)
+      .in('id', ctx.prodBatchIds)
+      .eq('cooperative_id', cooperative.id)
+      .order('process_date'),
+    supabase.from('batch_ph_controls')
+      .select('production_batch_id, record_date, regulator_type, regulator_quantity_value, regulator_quantity_unit, ph_initial, ph_final, brix, corrective_action')
+      .in('production_batch_id', ctx.prodBatchIds)
+      .order('record_date'),
+    supabase.from('batch_temperatures')
+      .select('production_batch_id, temperature, sequence_number')
+      .in('production_batch_id', ctx.prodBatchIds)
+      .order('sequence_number'),
+    supabase.from('batch_certs').select('id, name').eq('cooperative_id', cooperative.id).order('name'),
+  ])
+  for (const r of [batchesRes, phRes, tempRes, certsRes]) if (r.error) throw new Error(r.error.message)
+
+  const byBatch = rows => {
+    const m = {}
+    for (const r of rows ?? []) (m[r.production_batch_id] ??= []).push(r)
+    return m
+  }
+  const phByBatch = byBatch(phRes.data)
+  const tempByBatch = byBatch(tempRes.data)
+  const batches = (batchesRes.data ?? []).map(b => ({
+    ...b,
+    ph_controls: phByBatch[b.id] ?? [],
+    temperatures: tempByBatch[b.id] ?? [],
+  }))
+  return { certNames: ctx.certNames, batches, allCerts: certsRes.data ?? [] }
 }
 
-export function buildPrintHTMLFcmtph(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, batches, allCerts, firmantes) {
-  const emisionDate = emittedAt
-    ? new Date(emittedAt).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' })
-    : '___/___/______'
+export function fcmtphOrdenPdf(cooperative, order, containerNumber, { certNames, batches, allCerts }, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fcmptph',
+    title: FORMAT_TITLE_FCMPTPH,
+    certNames,
+    firmantes,
+    body: batches.length > 0
+      ? buildLoteBlocksHTML(batches, allCerts)
+      : campoSinRegistrosHTML('La orden no tiene lotes de campo asignados.'),
+  })
+}
 
-  const approvalRow = !cooperative?.features?.certificacion
-    ? `<div><span class="meta-label">Fecha de aprobación:</span> ___/___/______</div>`
-    : ''
-
-  const firmasHTML = buildFirmasHTML(firmantes)
-
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <title>${formatCode}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px">${cooperative?.name}</div>
-      <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FCMPTPH}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong>${formatCode}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-      ${approvalRow}
-      <div><span class="meta-label">Responsables:</span> ${(firmantes ?? []).map(f => escapeHtml(f.nombre)).filter(Boolean).join(', ') || '—'}</div>
-    </div>
-  </div>
-
-  ${buildLoteBlocksHTML(batches, allCerts)}
-
-  ${firmasHTML ? `<div class="formato-firmas">${firmasHTML}</div>` : ''}
-</body>
-</html>`
+export function fcmtphOrdenExcel(cooperative, order, containerNumber, { certNames, batches, allCerts }) {
+  const header = campoExcelHeader(order, certNames, FORMAT_TITLE_FCMPTPH)
+  const produccion = [...header, [
+    'Lote de campo', 'Productor', 'Condición', 'Módulo', 'Parcela', 'F. Corte', ...allCerts.map(c => c.name),
+    'Caña (kg)', 'F. Proceso', 'Jugo (L)', 'Panela (kg)', 'Confitillo (kg)', 'Rendim. %',
+    'Densidad caña (kg/L)', '% Extracción', '% Cachaza', 'Observaciones',
+  ]]
+  const ph = [...header, ['Lote de campo', '#', 'Fecha', 'Regulador', 'Cantidad', 'Unidad', 'pH sin regular', 'pH regulado', 'Brix', 'Acción correctiva']]
+  const temp = [...header, ['Lote de campo', 'Batch #', 'Temperatura (°C)']]
+  for (const b of batches) {
+    const certIds = new Set((b.production_batch_certs ?? []).map(pc => pc.batch_certs?.id).filter(Boolean))
+    produccion.push([
+      b.batch_code ?? '', producerName(b.producers), b.producers?.is_member ? 'Socio' : 'No socio',
+      b.producers?.coop_modules?.name ?? '', b.plots ? `${b.plots.name} (${b.plots.code})` : '', b.harvest_date ?? '',
+      ...allCerts.map(c => certIds.has(c.id) ? '✓' : ''),
+      b.cane_kg ?? '', b.process_date ?? '', b.juice_liters ?? '', b.panela_kg ?? '', b.confitillo_kg ?? '', b.efficiency_percentage ?? '',
+      b.cane_density ?? '', b.porcentaje_extraccion ?? '', b.cachaza_percentage ?? '', b.observations ?? '',
+    ])
+    b.ph_controls.forEach((p, i) => ph.push([
+      b.batch_code ?? '', i + 1, p.record_date?.slice(0, 10) ?? '', p.regulator_type ?? '', p.regulator_quantity_value ?? '',
+      p.regulator_quantity_unit ?? '', p.ph_initial ?? '', p.ph_final ?? '', p.brix ?? '', p.corrective_action ?? '',
+    ]))
+    b.temperatures.forEach(t => temp.push([b.batch_code ?? '', t.sequence_number, t.temperature]))
+  }
+  writeCampoExcel('fcmptph', order, containerNumber, [['Producción', produccion], ['Control de pH', ph], ['Control de temperatura', temp]])
 }

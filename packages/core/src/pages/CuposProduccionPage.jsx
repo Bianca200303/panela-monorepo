@@ -1,157 +1,310 @@
-import { useState, useEffect, useCallback } from 'react'
+import { toast } from '../lib/toast'
+import ClearableInput from '../components/ClearableInput'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
 import { SkeletonList } from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import Icon from '../components/Icon'
 import { useConfirm } from '../hooks/useConfirm'
+import { exportSheetsToExcel } from '../lib/excelExport'
+import ImportarCuposModal from './ImportarCuposModal'
+import { fetchActivePlots, fetchQuotasByCampaign, fetchProductionWithoutQuota, fetchProductionOutsideCampaign, quotaWarnings, typicalQuotaKg, quotaSheetColumns, quotaSheetRows } from '../lib/quotaImport'
+import { fetchAllRows } from '../lib/fetchAllRows'
+import { fetchCampaigns, defaultCampaign, previousCampaign, campaignPeriod, formatIsoDate } from '../lib/campaigns'
 
-// Gestión de cupos de producción certificada por productor (requisito de la
-// certificadora orgánica): cuánta panela con una certificación dada puede
-// producir/vender un productor por año. El modelo de datos y el cálculo de
-// consumo (producer_quotas + get_producer_quotas_by_year /
-// get_producer_quota_statuses) ya existían para la app móvil -- esta página
-// es la primera gestión desde el web, por eso restringida a admin_web
-// (ver AdminRoute en App.jsx y la migración 20260806100000 que cerró la
-// escritura de producer_quotas al rol admin).
+// Cupos de producción POR PARCELA y certificación: cuánta panela con una
+// certificación puede producir cada parcela por CAMPAÑA (lotes con fecha de
+// proceso dentro del periodo de la campaña). El total de un productor no se
+// guarda: se calcula sumando sus parcelas. Datos: plot_quotas +
+// get_plot_quotas_by_campaign (el mismo RPC que el celular descarga para
+// avisar sin conexión). Solo admin_web escribe (migración 20261108120000).
+// Carga desde Excel: ImportarCuposModal.
 
-const emptyForm = { quotaId: null, producerId: '', producerName: '', coopModuleId: '', certId: '', cupoKg: '', notes: '' }
+const emptyForm = { quotaId: null, producerId: '', producerName: '', plotId: '', plotName: '', certId: '', cupoKg: '', notes: '' }
 
-function currentYear() { return new Date().getFullYear() }
+const kg = (n) => Number(n ?? 0).toFixed(1)
 
-// Mismos umbrales que la app móvil (producer_quota_status.dart /
-// QUOTA_SYSTEM.md): ok < 80%, warning 80-99%, excedido = superado (>=100%).
-// Se mantienen iguales aquí para que un cupo se vea "amarillo" en ambos
-// lados a la vez, no que la web lo marque bien cuando el móvil ya alertó.
+// Mismos umbrales que la app móvil (plot_quota_status.dart): ok < 80%,
+// warning 80-99%, superado >= 100%.
 function pctTag(pct, superado) {
   if (superado) return <span className="tag error-tag">{pct}% · superado</span>
   if (pct >= 80) return <span className="tag warn">{pct}%</span>
   return <span className="tag ok">{pct}%</span>
 }
 
+const pct = (usado, cupo) => (cupo > 0 ? Math.round((usado / cupo) * 10000) / 100 : 0)
+
+// Barra de avance del cupo, con los mismos colores que la etiqueta de %.
+function QuotaBar({ pct: value, superado }) {
+  const color = superado ? 'var(--danger)' : value >= 80 ? 'var(--warning)' : 'var(--success)'
+  return (
+    <span style={{ flex: '1 1 120px', maxWidth: 220, height: 8, borderRadius: 4, background: 'var(--border)', overflow: 'hidden' }}>
+      <span style={{ display: 'block', height: '100%', width: `${Math.min(value, 100)}%`, background: color }} />
+    </span>
+  )
+}
+
+const FILTERS = [
+  { key: 'todas', label: 'Todas' },
+  { key: 'con', label: 'Con cupo' },
+  { key: 'sin', label: 'Sin cupo' },
+  { key: 'superado', label: 'Superadas' },
+  { key: 'sinCupoProd', label: 'Producción sin cupo' },
+]
+
+// Productores que se muestran a la vez (son más de 500).
+const PAGE = 50
+
+const plotMatchesFilter =(plot, filter) =>
+  filter === 'con' ? plot.quotas.length > 0
+    : filter === 'sin' ? plot.quotas.length === 0
+    : filter === 'superado' ? plot.quotas.some(q => q.superado)
+    : filter === 'sinCupoProd' ? plot.unquoted.length > 0
+    : true
+
+// Productor → parcelas → cupos. Incluye las parcelas activas sin cupo (para
+// asignarles uno) y las parcelas con cupo o con producción aunque ya estén
+// de baja. unquoted = producción del año en certificaciones sin cupo en esa
+// parcela (get_production_without_quota).
+function groupByProducer(plots, quotas, unquoted) {
+  const plotMap = new Map(plots.map(p => [p.id, {
+    id: p.id, name: p.name, code: p.code, quotas: [], unquoted: [],
+    producer: { id: p.producerId, name: p.producerName, dni: p.dni, module: p.moduleName },
+  }]))
+  const plotFor = (r) => {
+    if (!plotMap.has(r.plot_id)) {
+      plotMap.set(r.plot_id, {
+        id: r.plot_id, name: r.plot_name, code: r.plot_code, quotas: [], unquoted: [],
+        producer: { id: r.producer_id, name: r.producer_name, dni: r.producer_dni, module: r.module_name },
+      })
+    }
+    return plotMap.get(r.plot_id)
+  }
+  for (const q of quotas) plotFor(q).quotas.push(q)
+  for (const u of unquoted) plotFor(u).unquoted.push(u)
+  const groups = new Map()
+  for (const pl of plotMap.values()) {
+    const pr = pl.producer
+    if (!groups.has(pr.id)) groups.set(pr.id, { key: pr.id, id: pr.id, name: pr.name, dni: pr.dni, module: pr.module, plots: [] })
+    groups.get(pr.id).plots.push(pl)
+  }
+  // Conteos y totales: de TODAS sus parcelas (no cambian al buscar o filtrar).
+  return [...groups.values()]
+    .map(g => {
+      const all = g.plots.flatMap(pl => pl.quotas)
+      return {
+        ...g,
+        plots: g.plots.sort((a, b) => a.name.localeCompare(b.name)),
+        plotCount: g.plots.length,
+        withQuota: g.plots.filter(pl => pl.quotas.length > 0).length,
+        cupo: all.reduce((t, q) => t + Number(q.cupo_kg), 0),
+        usado: all.reduce((t, q) => t + Number(q.acumulado_kg), 0),
+        superado: all.some(q => q.superado),
+        sinCupoProd: g.plots.some(pl => pl.unquoted.length > 0),
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// Exportar Excel: hoja 1 = mismo formato que la plantilla de importación
+// (una fila por parcela, una columna por certificación), se puede corregir
+// y volver a importar; hoja 2 = consumo de cada cupo (solo lectura).
+const USAGE_COLUMNS = [
+  { label: 'Productor', value: r => r.producer_name },
+  { label: 'DNI', value: r => r.producer_dni },
+  { label: 'Módulo', value: r => r.module_name },
+  { label: 'Parcela', value: r => r.plot_name },
+  { label: 'Código parcela', value: r => r.plot_code },
+  { label: 'Certificación', value: r => r.cert_name },
+  { label: 'Cupo (kg)', value: r => Number(r.cupo_kg) },
+  { label: 'Notas', value: r => r.notes },
+  { label: 'Campaña', value: r => r.year },
+  { label: 'Usado (kg)', value: r => Number(r.acumulado_kg) },
+  { label: 'Disponible (kg)', value: r => Number(r.disponible_kg) },
+  { label: '% usado', value: r => Number(r.porcentaje_usado) },
+]
+
+const UNQUOTED_COLUMNS = [
+  { label: 'Productor', value: r => r.producer_name },
+  { label: 'DNI', value: r => r.producer_dni },
+  { label: 'Módulo', value: r => r.module_name },
+  { label: 'Parcela', value: r => r.plot_name },
+  { label: 'Código parcela', value: r => r.plot_code },
+  { label: 'Certificación', value: r => r.cert_name },
+  { label: 'Producido sin cupo (kg)', value: r => Number(r.panela_kg) },
+  { label: 'Lotes', value: r => r.lotes },
+]
+
 export default function CuposProduccionPage() {
   const COOPERATIVE_ID = useCooperative().id
-  const [year, setYear] = useState(currentYear())
-  const [tab, setTab] = useState('tabla') // 'tabla' | 'buscar'
+  const [campaigns, setCampaigns] = useState(null) // null = cargando
+  const [campaignId, setCampaignId] = useState('')
+  const [outside, setOutside] = useState([]) // lotes fuera de toda campaña
+  const [showOutside, setShowOutside] = useState(false)
+  const [filter, setFilter] = useState(null) // null = automático (ver activeFilter)
+  const [moduleFilter, setModuleFilter] = useState('') // nombre del módulo
+  const [expanded, setExpanded] = useState(() => new Set()) // productores abiertos
+  const [visibleCount, setVisibleCount] = useState(PAGE)
+  const [plots, setPlots] = useState(null) // parcelas activas de la cooperativa
   const [certs, setCerts] = useState([])
   const [modules, setModules] = useState([])
   const [quotas, setQuotas] = useState([])
+  const [unquoted, setUnquoted] = useState([]) // producción sin cupo del año
   const [tableSearch, setTableSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const { confirm, dialog: confirmDialog } = useConfirm()
 
   const [producerQuery, setProducerQuery] = useState('')
   const [producerResults, setProducerResults] = useState([])
-  const [selectedProducer, setSelectedProducer] = useState(null) // { id, first_name, last_name, dni, coop_module_id }
 
-  const [modalForm, setModalForm] = useState(null) // null | emptyForm shape
+  const [modalForm, setModalForm] = useState(null)
+  const [modalPlots, setModalPlots] = useState([]) // parcelas activas del productor elegido en el modal
   const [modalError, setModalError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Carga masiva -- refleja las queries operacionales de QUOTA_SYSTEM.md
-  // (secciones 1 y 6) que hasta ahora se corrían a mano por SQL Editor.
   const [showBulk, setShowBulk] = useState(false)
   const [bulkModuleId, setBulkModuleId] = useState('')
   const [bulkCertId, setBulkCertId] = useState('')
   const [bulkCupoKg, setBulkCupoKg] = useState('')
-  const [bulkModuleCount, setBulkModuleCount] = useState(null)
   const [bulkError, setBulkError] = useState('')
   const [bulkResult, setBulkResult] = useState('')
   const [bulkSaving, setBulkSaving] = useState(false)
   const [copySaving, setCopySaving] = useState(false)
+  const [showImport, setShowImport] = useState(false)
 
   const loadCerts = useCallback(() =>
-    supabase
-      .from('batch_certs')
-      .select('id, name')
-      .eq('cooperative_id', COOPERATIVE_ID)
-      .eq('is_active', true)
-      .order('name')
+    supabase.from('batch_certs').select('id, name')
+      .eq('cooperative_id', COOPERATIVE_ID).eq('is_active', true).order('name')
       .then(({ data }) => setCerts(data ?? []))
-  , [])
+  , [COOPERATIVE_ID])
 
   const loadModules = useCallback(() =>
-    supabase
-      .from('coop_modules')
-      .select('id, name')
-      .eq('cooperative_id', COOPERATIVE_ID)
-      .eq('is_active', true)
-      .order('name')
+    supabase.from('coop_modules').select('id, name')
+      .eq('cooperative_id', COOPERATIVE_ID).eq('is_active', true).order('name')
       .then(({ data }) => setModules(data ?? []))
-  , [])
+  , [COOPERATIVE_ID])
 
-  const loadQuotas = useCallback((y) => {
+  const loadQuotas = useCallback((id) => {
+    if (!id) { setQuotas([]); setUnquoted([]); setLoading(false); return Promise.resolve() }
     setLoading(true)
-    return supabase
-      .rpc('get_producer_quotas_by_year', { p_year: y })
-      .then(({ data, error }) => {
-        if (error) console.error(error)
-        setQuotas(data ?? [])
-        setLoading(false)
-      })
+    return Promise.all([
+      fetchQuotasByCampaign(id)
+        .then(setQuotas)
+        .catch(err => { toast.error('No se pudieron cargar los cupos', err.message); setQuotas([]) }),
+      fetchProductionWithoutQuota(id)
+        .then(setUnquoted)
+        .catch(err => { toast.error('No se pudo cargar la producción sin cupo', err.message); setUnquoted([]) }),
+    ]).finally(() => setLoading(false))
   }, [])
 
   useEffect(() => { loadCerts(); loadModules() }, [loadCerts, loadModules])
-  useEffect(() => { loadQuotas(year) }, [year, loadQuotas])
-
-  // Cuenta productores activos del módulo elegido en la carga masiva, para
-  // mostrar "Aplicar a N productores" antes de confirmar.
+  useEffect(() => { loadQuotas(campaignId) }, [campaignId, loadQuotas])
   useEffect(() => {
-    if (!bulkModuleId) { setBulkModuleCount(null); return }
-    supabase
-      .from('producers')
-      .select('id', { count: 'exact', head: true })
-      .eq('cooperative_id', COOPERATIVE_ID)
-      .eq('coop_module_id', bulkModuleId)
-      .eq('is_active', true)
-      .then(({ count }) => setBulkModuleCount(count ?? 0))
-  }, [bulkModuleId])
+    fetchCampaigns(COOPERATIVE_ID)
+      .then(list => { setCampaigns(list); setCampaignId(defaultCampaign(list)?.id ?? '') })
+      .catch(err => { toast.error('No se pudieron cargar las campañas', err.message); setCampaigns([]) })
+    fetchProductionOutsideCampaign().then(setOutside)
+      .catch(err => toast.error('No se pudo revisar la producción fuera de campaña', err.message))
+  }, [COOPERATIVE_ID])
+  const campaign = campaigns?.find(c => c.id === campaignId) ?? null
+  const prevCampaign = campaign ? previousCampaign(campaigns, campaign) : null
+  useEffect(() => {
+    fetchActivePlots(COOPERATIVE_ID).then(setPlots)
+      .catch(err => { toast.error('No se pudieron cargar las parcelas', err.message); setPlots([]) })
+  }, [COOPERATIVE_ID])
 
-  // Búsqueda de productor -- solo dispara desde 2 caracteres para no traer
-  // el catálogo completo en cada tecla.
+  // Parcelas activas (de productores activos) del módulo de la carga masiva.
+  const bulkPlots = bulkModuleId && plots ? plots.filter(p => p.moduleId === bulkModuleId) : null
+
+  // Búsqueda de productor desde 2 caracteres.
   useEffect(() => {
     if (producerQuery.trim().length < 2) { setProducerResults([]); return }
     const q = producerQuery.trim()
     const timer = setTimeout(() => {
-      supabase
-        .from('producers')
-        // Un mismo DNI puede existir como más de un producer_id -- cada
-        // registro de productor pertenece a un módulo específico (ver
-        // QUOTA_SYSTEM.md), así que el módulo hay que mostrarlo para no
-        // asignar el cupo al registro equivocado.
-        .select('id, first_name, last_name, dni, coop_module_id, coop_modules(name)')
-        .eq('cooperative_id', COOPERATIVE_ID)
-        .eq('is_active', true)
+      supabase.from('producers')
+        .select('id, first_name, last_name, dni, coop_modules(name)')
+        .eq('cooperative_id', COOPERATIVE_ID).eq('is_active', true)
         .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,dni.ilike.%${q}%`)
-        .order('first_name')
-        .limit(20)
+        .order('first_name').limit(20)
         .then(({ data }) => setProducerResults(data ?? []))
     }, 250)
     return () => clearTimeout(timer)
-  }, [producerQuery])
+  }, [producerQuery, COOPERATIVE_ID])
 
-  const producerQuotasInTab = selectedProducer
-    ? quotas.filter(q => q.producer_id === selectedProducer.id)
-    : []
+  // Parcelas del productor elegido en el modal (nuevo cupo).
+  useEffect(() => {
+    if (!modalForm?.producerId || modalForm.quotaId) { setModalPlots([]); return }
+    supabase.from('plots').select('id, name, code')
+      .eq('producer_id', modalForm.producerId).eq('is_active', true).order('name')
+      .then(({ data }) => setModalPlots(data ?? []))
+  }, [modalForm?.producerId, modalForm?.quotaId])
 
-  // Filtro en el propio cliente (los cupos del año ya están todos cargados
-  // en memoria) -- así se busca directo en la tabla sin depender del tab
-  // "Buscar productor" (que además sirve para otra cosa: asignar un cupo
-  // nuevo a un productor que todavía no tiene ninguno).
   const tableQuery = tableSearch.trim().toLowerCase()
-  const filteredQuotas = tableQuery
-    ? quotas.filter(q =>
-        q.producer_name?.toLowerCase().includes(tableQuery) ||
-        q.producer_dni?.toLowerCase().includes(tableQuery))
-    : quotas
+  const allGroups = useMemo(() => groupByProducer(plots ?? [], quotas, unquoted), [plots, quotas, unquoted])
 
-  const openNewQuota = (producer = null) => {
+  // Módulo y búsqueda. Búsqueda: si coincide el productor se ven todas sus
+  // parcelas; si no, solo las parcelas que coinciden.
+  const searched = useMemo(() => {
+    const inModule = moduleFilter ? allGroups.filter(g => g.module === moduleFilter) : allGroups
+    if (!tableQuery) return inModule
+    const hit = (...vals) => vals.some(v => v?.toLowerCase().includes(tableQuery))
+    return inModule
+      .map(g => (hit(g.name, g.dni) ? g : { ...g, plots: g.plots.filter(pl => hit(pl.name, pl.code)) }))
+      .filter(g => g.plots.length > 0)
+  }, [allGroups, moduleFilter, tableQuery])
+
+  const counts = useMemo(() => {
+    const all = searched.flatMap(g => g.plots)
+    return Object.fromEntries(FILTERS.map(f => [f.key, all.filter(pl => plotMatchesFilter(pl, f.key)).length]))
+  }, [searched])
+
+  // Al entrar se ve "Con cupo" (la mayoría de parcelas suele no tener cupo);
+  // si todavía no hay ninguno en el año, "Todas".
+  const activeFilter = filter ?? (counts.con > 0 ? 'con' : 'todas')
+
+  const groups = useMemo(() => searched
+    .map(g => ({ ...g, plots: g.plots.filter(pl => plotMatchesFilter(pl, activeFilter)) }))
+    .filter(g => g.plots.length > 0), [searched, activeFilter])
+
+  const filteredQuotas = groups.flatMap(g => g.plots.flatMap(pl => pl.quotas))
+
+  // Se muestran por partes; al cambiar filtro, módulo o búsqueda se vuelve
+  // a empezar.
+  useEffect(() => { setVisibleCount(PAGE) }, [activeFilter, moduleFilter, tableQuery, campaignId])
+  const toggleProducer = (id) => setExpanded(s => {
+    const next = new Set(s)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  // Con búsqueda los resultados son pocos: se muestran abiertos.
+  const isOpen = (id) => !!tableQuery || expanded.has(id)
+
+  const handleExport = () => {
+    const visiblePlots = groups.flatMap(g => g.plots.map(pl => ({
+      id: pl.id, name: pl.name, code: pl.code,
+      producerName: g.name, dni: g.dni, moduleName: g.module,
+    })))
+    exportSheetsToExcel({
+      fileName: `Cupos por parcela campaña ${campaign?.year}${tableQuery || moduleFilter || activeFilter !== 'todas' ? ' (filtrado)' : ''}`,
+      sheets: [
+        { sheetName: `Campaña ${campaign?.year}`, columns: quotaSheetColumns(certs), rows: quotaSheetRows(visiblePlots, quotas) },
+        { sheetName: 'Consumo', columns: USAGE_COLUMNS, rows: filteredQuotas },
+        { sheetName: 'Producción sin cupo', columns: UNQUOTED_COLUMNS, rows: groups.flatMap(g => g.plots.flatMap(pl => pl.unquoted)) },
+      ],
+    })
+  }
+
+  // Sin argumentos: elegir productor y parcela en el modal. Desde la lista:
+  // productor y parcela ya elegidos.
+  const openNewQuota = (producer = null, plot = null, certId = '') => {
     setModalError('')
     setModalForm({
       ...emptyForm,
       producerId: producer?.id ?? '',
-      producerName: producer ? `${producer.first_name} ${producer.last_name}` : '',
-      coopModuleId: producer?.coop_module_id ?? '',
+      producerName: producer?.name ?? '',
+      plotId: plot?.id ?? '',
+      certId,
     })
   }
 
@@ -161,20 +314,34 @@ export default function CuposProduccionPage() {
       quotaId: row.quota_id,
       producerId: row.producer_id,
       producerName: row.producer_name,
-      coopModuleId: null, // no se toca en edición
+      plotId: row.plot_id,
+      plotName: row.plot_name,
       certId: row.cert_id,
       cupoKg: String(row.cupo_kg),
       notes: row.notes ?? '',
     })
   }
 
+  // Certificaciones que la parcela ya tiene en el año: en "Nuevo cupo" no se
+  // ofrecen (para cambiarlas se usa Editar).
+  const takenCertIds = (plotId) => new Set(quotas.filter(q => q.plot_id === plotId).map(q => q.cert_id))
+  const modalTakenCerts = modalForm && !modalForm.quotaId ? takenCertIds(modalForm.plotId) : new Set()
+
+  const typicalKg = useMemo(() => typicalQuotaKg(quotas.map(q => Number(q.cupo_kg))), [quotas])
+  const editedQuota = modalForm?.quotaId ? quotas.find(q => q.quota_id === modalForm.quotaId) : null
+  const modalWarnings = modalForm && Number(modalForm.cupoKg) > 0
+    ? quotaWarnings({
+        cupoKg: Number(modalForm.cupoKg),
+        previousKg: editedQuota ? Number(editedQuota.cupo_kg) : null,
+        usedKg: editedQuota ? Number(editedQuota.acumulado_kg) : 0,
+        referenceKg: typicalKg,
+      })
+    : []
+
+  const closeModal = () => { setModalForm(null); setProducerQuery(''); setProducerResults([]) }
+
   const handlePickProducerInModal = (producer) => {
-    setModalForm(f => ({
-      ...f,
-      producerId: producer.id,
-      producerName: `${producer.first_name} ${producer.last_name}`,
-      coopModuleId: producer.coop_module_id,
-    }))
+    setModalForm(f => ({ ...f, producerId: producer.id, producerName: `${producer.first_name} ${producer.last_name}`, plotId: '' }))
     setProducerQuery('')
     setProducerResults([])
   }
@@ -182,37 +349,32 @@ export default function CuposProduccionPage() {
   const handleSaveQuota = async () => {
     setModalError('')
     if (!modalForm.producerId) { setModalError('Elija un productor.'); return }
+    if (!modalForm.plotId) { setModalError('Elija una parcela.'); return }
     if (!modalForm.certId) { setModalError('Elija una certificación.'); return }
     const cupoKg = Number(modalForm.cupoKg)
     if (!cupoKg || cupoKg <= 0) { setModalError('El cupo debe ser un número mayor a 0.'); return }
 
     setSaving(true)
     try {
-      if (modalForm.quotaId) {
-        const { error } = await supabase
-          .from('producer_quotas')
-          .update({ cupo_kg: cupoKg, notes: modalForm.notes.trim() || null })
-          .eq('id', modalForm.quotaId)
-        if (error) throw error
-      } else {
-        const { error } = await supabase
-          .from('producer_quotas')
-          .insert({
-            producer_id: modalForm.producerId,
+      const { error } = modalForm.quotaId
+        ? await supabase.from('plot_quotas')
+            .update({ cupo_kg: cupoKg, notes: modalForm.notes.trim() || null })
+            .eq('id', modalForm.quotaId)
+        : await supabase.from('plot_quotas').insert({
+            plot_id: modalForm.plotId,
             batch_cert_id: modalForm.certId,
             cooperative_id: COOPERATIVE_ID,
-            coop_module_id: modalForm.coopModuleId,
             cupo_kg: cupoKg,
-            year,
+            campaign_id: campaignId,
             notes: modalForm.notes.trim() || null,
           })
-        if (error) {
-          if (error.code === '23505') throw new Error('Este productor ya tiene un cupo cargado para esa certificación en ese año.')
-          throw error
-        }
+      if (error) {
+        if (error.code === '23505') throw new Error('Esta parcela ya tiene un cupo para esa certificación en esta campaña.')
+        throw error
       }
-      setModalForm(null)
-      loadQuotas(year)
+      closeModal()
+      toast.success('Cupo guardado')
+      loadQuotas(campaignId)
     } catch (err) {
       setModalError(err.message)
     } finally {
@@ -223,54 +385,51 @@ export default function CuposProduccionPage() {
   const handleDeleteQuota = async (row) => {
     const ok = await confirm({
       title: 'Eliminar cupo',
-      message: `¿Eliminar el cupo de ${row.cert_name} de ${row.producer_name} para ${year}?`,
+      message: `¿Eliminar el cupo de ${row.cert_name} de la parcela ${row.plot_name} (${row.producer_name}) en la campaña ${campaign?.year}?`,
       confirmText: 'Eliminar',
       danger: true,
     })
     if (!ok) return
-    await supabase.from('producer_quotas').delete().eq('id', row.quota_id)
-    loadQuotas(year)
+    const { error } = await supabase.from('plot_quotas').delete().eq('id', row.quota_id)
+    if (error) { toast.error('No se pudo eliminar el cupo', error.message); return }
+    toast.success('Cupo eliminado')
+    loadQuotas(campaignId)
   }
 
-  // Copia todos los cupos de (year - 1) a year. No pisa los que ya existan
-  // para year (mismo criterio que "ON CONFLICT DO NOTHING" de
-  // QUOTA_SYSTEM.md §6) -- si alguien ya ajustó un cupo puntual para el año
-  // nuevo, la copia no lo revierte.
-  const handleCopyPreviousYear = async () => {
+  // Inserta cupos sin pisar los que ya existan en la campaña (si alguien ya
+  // ajustó uno a mano, no se revierte).
+  const insertQuotasSkippingExisting = async (rows) => {
+    const { data, error } = await supabase.from('plot_quotas')
+      .upsert(rows, { onConflict: 'plot_id,batch_cert_id,campaign_id', ignoreDuplicates: true })
+      .select('id')
+    if (error) throw error
+    return data?.length ?? 0
+  }
+
+  const handleCopyPreviousCampaign = async () => {
     setBulkError(''); setBulkResult('')
+    if (!prevCampaign) { setBulkError('No hay una campaña anterior.'); return }
     const ok = await confirm({
-      title: 'Copiar cupos del año anterior',
-      message: `¿Copiar todos los cupos de ${year - 1} a ${year}? Los productores que ya tengan cupo cargado para ${year} en esa certificación no se van a modificar.`,
+      title: 'Copiar cupos de la campaña anterior',
+      message: `¿Copiar todos los cupos de la campaña ${prevCampaign.year} a la campaña ${campaign.year}? Las parcelas que ya tengan cupo en esta campaña para esa certificación no se modifican.`,
       confirmText: 'Copiar',
     })
     if (!ok) return
     setCopySaving(true)
     try {
-      const { data: prev, error: fetchErr } = await supabase
-        .from('producer_quotas')
-        .select('producer_id, batch_cert_id, coop_module_id, cupo_kg')
-        .eq('cooperative_id', COOPERATIVE_ID)
-        .eq('year', year - 1)
-      if (fetchErr) throw fetchErr
-      if (!prev || prev.length === 0) { setBulkError(`No hay cupos cargados para ${year - 1}.`); return }
-
-      const rows = prev.map(q => ({
-        producer_id: q.producer_id,
-        batch_cert_id: q.batch_cert_id,
-        cooperative_id: COOPERATIVE_ID,
-        coop_module_id: q.coop_module_id,
-        cupo_kg: q.cupo_kg,
-        year,
-        notes: `Cupo ${year} — copiado de ${year - 1}`,
-      }))
-      const { data: inserted, error: upsertErr } = await supabase
-        .from('producer_quotas')
-        .upsert(rows, { onConflict: 'producer_id,batch_cert_id,year', ignoreDuplicates: true })
-        .select('id')
-      if (upsertErr) throw upsertErr
-
-      loadQuotas(year)
-      setBulkResult(`Se copiaron ${inserted?.length ?? 0} de ${rows.length} cupos de ${year - 1} a ${year}.`)
+      const prev = await fetchAllRows(() => supabase.from('plot_quotas')
+        .select('plot_id, batch_cert_id, cupo_kg')
+        .eq('cooperative_id', COOPERATIVE_ID).eq('campaign_id', prevCampaign.id)
+        .order('id'))
+      // Solo certificaciones activas: una dada de baja no pasa a la nueva campaña.
+      const activeCertIds = new Set(certs.map(c => c.id))
+      const toCopy = prev.filter(q => activeCertIds.has(q.batch_cert_id))
+      if (!toCopy.length) { setBulkError(`No hay cupos cargados en la campaña ${prevCampaign.year}.`); return }
+      const inserted = await insertQuotasSkippingExisting(toCopy.map(q => ({
+        ...q, cooperative_id: COOPERATIVE_ID, campaign_id: campaignId, notes: `Copiado de la campaña ${prevCampaign.year}`,
+      })))
+      loadQuotas(campaignId)
+      setBulkResult(`Se copiaron ${inserted} de ${toCopy.length} cupos de la campaña ${prevCampaign.year}.`)
     } catch (err) {
       setBulkError(err.message)
     } finally {
@@ -278,9 +437,7 @@ export default function CuposProduccionPage() {
     }
   }
 
-  // Asigna el mismo cupo a todos los productores activos de un módulo, para
-  // una certificación y año. Mismo criterio de no-sobreescritura que la
-  // copia de año anterior.
+  // Mismo cupo para todas las parcelas activas de un módulo.
   const handleBulkAssign = async () => {
     setBulkError(''); setBulkResult('')
     if (!bulkModuleId) { setBulkError('Elija un módulo.'); return }
@@ -290,32 +447,13 @@ export default function CuposProduccionPage() {
 
     setBulkSaving(true)
     try {
-      const { data: producersInModule, error: prodErr } = await supabase
-        .from('producers')
-        .select('id')
-        .eq('cooperative_id', COOPERATIVE_ID)
-        .eq('coop_module_id', bulkModuleId)
-        .eq('is_active', true)
-      if (prodErr) throw prodErr
-      if (!producersInModule || producersInModule.length === 0) { setBulkError('Ese módulo no tiene productores activos.'); return }
-
-      const rows = producersInModule.map(p => ({
-        producer_id: p.id,
-        batch_cert_id: bulkCertId,
-        cooperative_id: COOPERATIVE_ID,
-        coop_module_id: bulkModuleId,
-        cupo_kg: cupoKg,
-        year,
-      }))
-      const { data: inserted, error: upsertErr } = await supabase
-        .from('producer_quotas')
-        .upsert(rows, { onConflict: 'producer_id,batch_cert_id,year', ignoreDuplicates: true })
-        .select('id')
-      if (upsertErr) throw upsertErr
-
-      loadQuotas(year)
+      if (!bulkPlots?.length) { setBulkError('Ese módulo no tiene parcelas activas.'); return }
+      const inserted = await insertQuotasSkippingExisting(bulkPlots.map(p => ({
+        plot_id: p.id, batch_cert_id: bulkCertId, cooperative_id: COOPERATIVE_ID, cupo_kg: cupoKg, campaign_id: campaignId,
+      })))
+      loadQuotas(campaignId)
       setBulkCupoKg('')
-      setBulkResult(`Se asignó el cupo a ${inserted?.length ?? 0} de ${producersInModule.length} productores del módulo (los que ya tenían cupo para esa certificación en ${year} no se modificaron).`)
+      setBulkResult(`Se asignó el cupo a ${inserted} de ${bulkPlots.length} parcelas del módulo (las que ya tenían cupo para esa certificación en esta campaña no se modificaron).`)
     } catch (err) {
       setBulkError(err.message)
     } finally {
@@ -323,52 +461,86 @@ export default function CuposProduccionPage() {
     }
   }
 
+  const producerOption = (p, onPick) => (
+    <div key={p.id} style={{ padding: '6px 8px', cursor: 'pointer', borderRadius: 6 }} onClick={() => onPick(p)}>
+      {p.first_name} {p.last_name} <span className="muted small">DNI {p.dni} · {p.coop_modules?.name ?? 'sin módulo'}</span>
+    </div>
+  )
+
+  const rowActions = (row) => (
+    <>
+      <button className="btn small primary" onClick={() => openEditQuota(row)}>Editar</button>
+      <button className="btn small danger primary" onClick={() => handleDeleteQuota(row)}>Eliminar</button>
+    </>
+  )
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: '0 0 4px' }}>Cupos de producción por certificación</h2>
-          <p className="muted small" style={{ margin: 0 }}>
-            Límite anual de panela certificada que puede producir cada productor, por certificación.
-          </p>
-        </div>
-        <div className="field" style={{ margin: 0 }}>
-          <label>Año</label>
-          <input
-            type="number"
-            className="input"
-            style={{ width: 110 }}
-            value={year}
-            onChange={e => setYear(Number(e.target.value) || currentYear())}
-          />
-        </div>
+        <h2 style={{ margin: '0 0 4px' }}>Cupos de producción por parcela</h2>
+        {campaigns?.length > 0 && (
+          <div className="field" style={{ margin: 0 }}>
+            <label>Campaña</label>
+            <select className="input" value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+              {campaigns.map(c => (
+                <option key={c.id} value={c.id}>Campaña {c.year} ({campaignPeriod(c)}){c.is_active ? ' · activa' : ''}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
+      {outside.length > 0 && (
+        <div className="card" style={{ marginTop: 16, borderColor: 'var(--warning)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--warning)', fontWeight: 600 }}>
+              {outside.length} lote{outside.length === 1 ? '' : 's'} con fecha fuera de toda campaña: no cuenta{outside.length === 1 ? '' : 'n'} para ningún cupo. Ajuste las fechas en Catálogos → Campañas.
+            </span>
+            <button className="btn small outline" onClick={() => setShowOutside(v => !v)}>{showOutside ? 'Ocultar' : 'Ver lotes'}</button>
+          </div>
+          {showOutside && (
+            <div style={{ marginTop: 8, maxHeight: 220, overflow: 'auto' }}>
+              <table className="table small">
+                <thead><tr>{['Fecha de proceso', 'Lote', 'Productor', 'Parcela', 'Panela kg'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {outside.map(o => (
+                    <tr key={o.batch_id}>
+                      <td>{formatIsoDate(o.process_date)}</td>
+                      <td>{o.batch_code}</td>
+                      <td>{o.producer_name}</td>
+                      <td>{o.plot_name ?? '—'}{o.plot_code ? ` · ${o.plot_code}` : ''}</td>
+                      <td>{kg(o.panela_kg)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {campaigns && campaigns.length === 0 && (
+        <EmptyState icon="calendar" message="No hay campañas. Créelas en Catálogos → Campañas: los cupos son por campaña." />
+      )}
+
+      {campaign && (<>
+
       <div className="card" style={{ marginTop: 16 }}>
-        <button
-          className="btn small outline"
-          onClick={() => setShowBulk(s => !s)}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', padding: 0, background: 'none' }}
-        >
+        <button className="btn small outline" onClick={() => setShowBulk(s => !s)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', padding: 0, background: 'none' }}>
           <Icon name={showBulk ? 'chevronUp' : 'chevronDown'} size={16} />
-          <strong>Carga masiva de cupos {year}</strong>
+          <strong>Carga masiva de cupos · Campaña {campaign.year}</strong>
         </button>
 
         {showBulk && (
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div>
-              <p className="muted small" style={{ margin: '0 0 6px' }}>
-                Copia todos los cupos de {year - 1} a {year} (no pisa los que ya tengan cupo cargado este año).
-              </p>
-              <button className="btn small primary" onClick={handleCopyPreviousYear} disabled={copySaving}>
-                {copySaving ? 'Copiando...' : `Copiar cupos de ${year - 1} a ${year}`}
+              <p className="muted small" style={{ margin: '0 0 6px' }}>No reemplaza los cupos ya cargados en esta campaña.</p>
+              <button className="btn small primary" onClick={handleCopyPreviousCampaign} disabled={copySaving || !prevCampaign}>
+                {copySaving ? 'Copiando...' : prevCampaign ? `Copiar cupos de la campaña ${prevCampaign.year}` : 'Sin campaña anterior para copiar'}
               </button>
             </div>
-
             <div>
-              <p className="muted small" style={{ margin: '0 0 6px' }}>
-                Asigne el mismo cupo a todos los productores activos de un módulo, para una certificación.
-              </p>
               <div className="grid two" style={{ gap: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
                   <label>Módulo</label>
@@ -385,242 +557,216 @@ export default function CuposProduccionPage() {
                   </select>
                 </div>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>Cupo (kg)</label>
+                  <label>Cupo por parcela (kg)</label>
                   <input type="number" className="input" min="0" step="0.1" value={bulkCupoKg} onChange={e => setBulkCupoKg(e.target.value)} />
                 </div>
               </div>
               <button className="btn small primary" style={{ marginTop: 8 }} onClick={handleBulkAssign} disabled={bulkSaving}>
-                {bulkSaving
-                  ? 'Aplicando...'
-                  : bulkModuleCount != null
-                    ? `Aplicar a ${bulkModuleCount} productor(es) del módulo`
-                    : 'Aplicar'}
+                {bulkSaving ? 'Aplicando...' : bulkPlots ? `Aplicar a ${bulkPlots.length} parcela(s) del módulo` : 'Aplicar'}
               </button>
             </div>
-
-            {bulkError && <p style={{ color: '#dc2626', fontSize: 13, margin: 0 }}>{bulkError}</p>}
+            {bulkError && <p style={{ color: 'var(--danger)', fontSize: 13, margin: 0 }}>{bulkError}</p>}
             {bulkResult && <p style={{ color: 'var(--success)', fontSize: 13, margin: 0 }}>{bulkResult}</p>}
           </div>
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
-        <button className={`btn small ${tab === 'tabla' ? 'primary' : 'outline'}`} onClick={() => setTab('tabla')}>
-          Todos los productores
-        </button>
-        <button className={`btn small ${tab === 'buscar' ? 'primary' : 'outline'}`} onClick={() => setTab('buscar')}>
-          Buscar productor
-        </button>
-      </div>
-
-      {tab === 'tabla' && (
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-            <strong>Cupos {year} <span className="muted small">({filteredQuotas.length}{tableQuery ? ` de ${quotas.length}` : ''})</span></strong>
+      <div className="card" style={{ marginTop: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {FILTERS.map(f => (
+              <button key={f.key} className={`btn small ${activeFilter === f.key ? 'primary' : 'outline'}`} onClick={() => setFilter(f.key)}>
+                {f.label} ({counts[f.key]})
+              </button>
+            ))}
+            <select className="input" style={{ width: 'auto', padding: '4px 8px' }} value={moduleFilter} onChange={e => setModuleFilter(e.target.value)}>
+              <option value="">Todos los módulos</option>
+              {modules.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn small outline" onClick={() => setShowImport(true)}>Importar Excel</button>
+            <button className="btn small outline" onClick={handleExport} disabled={groups.length === 0}>Exportar Excel</button>
             <button className="btn small primary" onClick={() => openNewQuota()}>+ Nuevo cupo</button>
           </div>
-          {quotas.length > 0 && (
-            <input
-              type="text"
-              className="input"
-              placeholder="Buscar por nombre o DNI en esta tabla..."
-              value={tableSearch}
-              onChange={e => setTableSearch(e.target.value)}
-              style={{ marginBottom: 10 }}
-            />
-          )}
-          {loading ? (
-            <SkeletonList count={4} lines={1} />
-          ) : quotas.length === 0 ? (
-            <EmptyState message={`Todavía no hay cupos cargados para ${year}.`} />
-          ) : filteredQuotas.length === 0 ? (
-            <EmptyState icon="search" message="Ningún cupo coincide con la búsqueda." />
-          ) : (
-            <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
-              <table className="table small">
-                <thead>
-                  <tr>
-                    <th style={{ position: 'sticky', top: 0 }}>Productor</th>
-                    <th style={{ position: 'sticky', top: 0 }}>DNI</th>
-                    <th style={{ position: 'sticky', top: 0 }}>Módulo</th>
-                    <th style={{ position: 'sticky', top: 0 }}>Certificación</th>
-                    <th style={{ position: 'sticky', top: 0 }}>Cupo kg</th>
-                    <th style={{ position: 'sticky', top: 0 }}>Acumulado kg</th>
-                    <th style={{ position: 'sticky', top: 0 }}>Disponible kg</th>
-                    <th style={{ position: 'sticky', top: 0 }}>% usado</th>
-                    <th style={{ position: 'sticky', top: 0 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredQuotas.map(row => (
-                    <tr key={row.quota_id}>
-                      <td>{row.producer_name}</td>
-                      <td>{row.producer_dni}</td>
-                      <td>{row.module_name ?? '—'}</td>
-                      <td>{row.cert_name}</td>
-                      <td>{Number(row.cupo_kg).toFixed(1)}</td>
-                      <td>{Number(row.acumulado_kg).toFixed(1)}</td>
-                      <td>{Number(row.disponible_kg).toFixed(1)}</td>
-                      <td>{pctTag(row.porcentaje_usado, row.superado)}</td>
-                      <td style={{ display: 'flex', gap: 6 }}>
-                        <button className="btn small primary" onClick={() => openEditQuota(row)}>Editar</button>
-                        <button className="btn small danger primary" onClick={() => handleDeleteQuota(row)}>Eliminar</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
-      )}
+        <div style={{ marginBottom: 10 }}>
+          <ClearableInput className="input" placeholder="Buscar por productor, DNI, parcela o código..."
+            value={tableSearch} onChange={e => setTableSearch(e.target.value)} onClear={() => setTableSearch('')} />
+        </div>
 
-      {tab === 'buscar' && (
-        <div className="card">
-          <div className="field" style={{ marginBottom: 12 }}>
-            <label>Buscar productor por nombre o DNI</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="text"
-                className="input"
-                placeholder="Ej: Juan Pérez o 12345678"
-                value={selectedProducer ? `${selectedProducer.first_name} ${selectedProducer.last_name}` : producerQuery}
-                onChange={e => { setSelectedProducer(null); setProducerQuery(e.target.value) }}
-              />
-              {producerResults.length > 0 && !selectedProducer && (
-                <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, padding: 6, maxHeight: 220, overflowY: 'auto' }}>
-                  {producerResults.map(p => (
-                    <div
-                      key={p.id}
-                      style={{ padding: '6px 8px', cursor: 'pointer', borderRadius: 6 }}
-                      onClick={() => { setSelectedProducer(p); setProducerQuery('') }}
-                    >
-                      {p.first_name} {p.last_name} <span className="muted small">DNI {p.dni} · {p.coop_modules?.name ?? 'sin módulo'}</span>
-                    </div>
-                  ))}
-                </div>
+        {loading || !plots ? (
+          <SkeletonList count={4} lines={2} />
+        ) : groups.length === 0 ? (
+          <EmptyState icon="search" message={tableQuery ? 'Ningún productor coincide con la búsqueda.' : 'No hay parcelas en este filtro.'} />
+        ) : (
+          <div style={{ maxHeight: 600, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="small" style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <span>{groups.length} productor{groups.length === 1 ? '' : 'es'}</span>
+              {!tableQuery && (
+                <button className="btn small outline" style={{ border: 'none', padding: 0, background: 'none' }}
+                  onClick={() => setExpanded(s => (s.size ? new Set() : new Set(groups.slice(0, visibleCount).map(g => g.id))))}>
+                  {expanded.size ? 'Cerrar todos' : 'Abrir los visibles'}
+                </button>
               )}
             </div>
-          </div>
-
-          {!selectedProducer ? (
-            <EmptyState icon="search" message="Busque un productor para ver o asignar sus cupos." />
-          ) : (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <strong>{selectedProducer.first_name} {selectedProducer.last_name} <span className="muted small">DNI {selectedProducer.dni} · {selectedProducer.coop_modules?.name ?? 'sin módulo'}</span></strong>
-                <button className="btn small primary" onClick={() => openNewQuota(selectedProducer)}>+ Asignar cupo</button>
-              </div>
-              {producerQuotasInTab.length === 0 ? (
-                <EmptyState message={`Sin cupos asignados para ${year}.`} />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {producerQuotasInTab.map(row => (
-                    <div key={row.quota_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, flexWrap: 'wrap', gap: 6 }}>
-                      <span>
-                        <strong>{row.cert_name}</strong>{' '}
-                        <span className="muted small">{Number(row.acumulado_kg).toFixed(1)} / {Number(row.cupo_kg).toFixed(1)} kg</span>
-                      </span>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                        {pctTag(row.porcentaje_usado, row.superado)}
-                        <button className="btn small primary" onClick={() => openEditQuota(row)}>Editar</button>
-                        <button className="btn small danger primary" onClick={() => handleDeleteQuota(row)}>Eliminar</button>
+            {groups.slice(0, visibleCount).map(g => (
+              <div key={g.key} style={{ border: '1px solid var(--border)', borderRadius: 8, flexShrink: 0 }}>
+                <button type="button" onClick={() => toggleProducer(g.id)} aria-expanded={isOpen(g.id)}
+                  style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', font: 'inherit', color: 'inherit',
+                    borderBottom: isOpen(g.id) ? '1px solid var(--border)' : 'none' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Icon name={isOpen(g.id) ? 'chevronUp' : 'chevronDown'} size={16} />
+                    <span>
+                      <strong>{g.name}</strong>
+                      <span className="muted small"> · DNI {g.dni}{g.module ? ` · ${g.module}` : ''} · {g.plotCount} parcela{g.plotCount === 1 ? '' : 's'}, {g.withQuota} con cupo</span>
+                    </span>
+                  </span>
+                  {(g.cupo > 0 || g.sinCupoProd) && (
+                    <span className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', flex: '0 1 420px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      {g.cupo > 0 && (
+                        <>
+                          <QuotaBar pct={pct(g.usado, g.cupo)} superado={g.usado >= g.cupo} />
+                          {kg(g.usado)} / {kg(g.cupo)} kg {pctTag(pct(g.usado, g.cupo), g.usado >= g.cupo)}
+                        </>
+                      )}
+                      {g.superado && g.usado < g.cupo && <span className="tag error-tag">parcela superada</span>}
+                      {g.sinCupoProd && <span className="tag warn">producción sin cupo</span>}
+                    </span>
+                  )}
+                </button>
+                {isOpen(g.id) && g.plots.map(pl => (
+                  <div key={pl.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 200px) 1fr', gap: 8, padding: '8px 12px', alignItems: 'start' }}>
+                    <span>
+                      {pl.name}
+                      {pl.code ? <span className="muted small"> · {pl.code}</span> : null}
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {pl.quotas.map(q => (
+                        <div key={q.quota_id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ width: 110 }} className="small">{q.cert_name}</span>
+                          <QuotaBar usado={Number(q.acumulado_kg)} cupo={Number(q.cupo_kg)} superado={q.superado} pct={Number(q.porcentaje_usado)} />
+                          <span className="small" style={{ minWidth: 150 }}>{kg(q.acumulado_kg)} / {kg(q.cupo_kg)} kg</span>
+                          {pctTag(q.porcentaje_usado, q.superado)}
+                          <span style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>{rowActions(q)}</span>
+                        </div>
+                      ))}
+                      {pl.unquoted.map(u => (
+                        <div key={u.cert_id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ width: 110 }} className="small">{u.cert_name}</span>
+                          <span className="small" style={{ color: 'var(--warning)', fontWeight: 600 }}>
+                            Sin cupo · {kg(u.panela_kg)} kg producidos ({u.lotes} lote{u.lotes === 1 ? '' : 's'})
+                          </span>
+                          <span style={{ marginLeft: 'auto' }}>
+                            <button className="btn small primary" onClick={() => openNewQuota(g, pl, u.cert_id)}>Asignar cupo</button>
+                          </span>
+                        </div>
+                      ))}
+                      <div>
+                        <button className="btn small outline" onClick={() => openNewQuota(g, pl)}>
+                          {pl.quotas.length ? '+ Otra certificación' : '+ Asignar cupo'}
+                        </button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+                  </div>
+                ))}
+              </div>
+            ))}
+            {groups.length > visibleCount && (
+              <button className="btn small outline" style={{ alignSelf: 'center', flexShrink: 0 }} onClick={() => setVisibleCount(n => n + PAGE)}>
+                Mostrar más ({groups.length - visibleCount} restantes)
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* ── Modal: Nuevo/Editar cupo ── */}
+      </>)}
+
       {modalForm && (
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-body">
-              <h3 style={{ margin: '0 0 16px' }}>{modalForm.quotaId ? 'Editar cupo' : 'Nuevo cupo'} · {year}</h3>
+              <h3 style={{ margin: '0 0 16px' }}>{modalForm.quotaId ? 'Editar cupo' : 'Nuevo cupo'} · Campaña {campaign?.year}</h3>
 
-              {!modalForm.quotaId && !modalForm.producerId && (
+              {!modalForm.quotaId && !modalForm.producerId ? (
                 <div className="field">
                   <label>Productor *</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="Buscar por nombre o DNI..."
-                    value={producerQuery}
-                    onChange={e => setProducerQuery(e.target.value)}
-                  />
+                  <ClearableInput className="input" placeholder="Buscar por nombre o DNI..."
+                    value={producerQuery} onChange={e => setProducerQuery(e.target.value)} onClear={() => setProducerQuery('')} />
                   {producerResults.length > 0 && (
                     <div style={{ border: '1px solid var(--border)', borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
-                      {producerResults.map(p => (
-                        <div
-                          key={p.id}
-                          style={{ padding: '6px 8px', cursor: 'pointer' }}
-                          onClick={() => handlePickProducerInModal(p)}
-                        >
-                          {p.first_name} {p.last_name} <span className="muted small">DNI {p.dni} · {p.coop_modules?.name ?? 'sin módulo'}</span>
-                        </div>
-                      ))}
+                      {producerResults.map(p => producerOption(p, handlePickProducerInModal))}
                     </div>
                   )}
                 </div>
-              )}
-
-              {modalForm.producerId && (
+              ) : (
                 <div className="field">
                   <label>Productor</label>
                   <input type="text" className="input" value={modalForm.producerName} disabled />
                 </div>
               )}
 
+              {modalForm.producerId && (
+                <div className="field">
+                  <label>Parcela *</label>
+                  {modalForm.quotaId ? (
+                    <input type="text" className="input" value={modalForm.plotName} disabled />
+                  ) : (
+                    <select className="input" value={modalForm.plotId} onChange={e => {
+                      const plotId = e.target.value
+                      setModalForm(f => ({ ...f, plotId, certId: takenCertIds(plotId).has(f.certId) ? '' : f.certId }))
+                    }}>
+                      <option value="">{modalPlots.length ? 'Seleccionar...' : 'El productor no tiene parcelas activas'}</option>
+                      {modalPlots.map(p => <option key={p.id} value={p.id}>{p.name}{p.code ? ` · ${p.code}` : ''}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
+
               <div className="field">
                 <label>Certificación *</label>
-                <select
-                  className="input"
-                  value={modalForm.certId}
-                  disabled={!!modalForm.quotaId}
-                  onChange={e => setModalForm(f => ({ ...f, certId: e.target.value }))}
-                >
+                <select className="input" value={modalForm.certId} disabled={!!modalForm.quotaId}
+                  onChange={e => setModalForm(f => ({ ...f, certId: e.target.value }))}>
                   <option value="">Seleccionar...</option>
-                  {certs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {certs.map(c => (
+                    <option key={c.id} value={c.id} disabled={modalTakenCerts.has(c.id)}>
+                      {c.name}{modalTakenCerts.has(c.id) ? ' (ya tiene cupo)' : ''}
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div className="field">
                 <label>Cupo (kg) *</label>
-                <input
-                  type="number"
-                  className="input"
-                  min="0"
-                  step="0.1"
-                  value={modalForm.cupoKg}
-                  onChange={e => setModalForm(f => ({ ...f, cupoKg: e.target.value }))}
-                />
+                <input type="number" className="input" min="0" step="0.1" value={modalForm.cupoKg}
+                  onChange={e => setModalForm(f => ({ ...f, cupoKg: e.target.value }))} />
+                {modalWarnings.map(w => (
+                  <div key={w} className="small" style={{ color: 'var(--warning)', marginTop: 4 }}>Revise: {w}</div>
+                ))}
               </div>
 
               <div className="field">
                 <label>Notas</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="Opcional"
-                  value={modalForm.notes}
-                  onChange={e => setModalForm(f => ({ ...f, notes: e.target.value }))}
-                />
+                <input type="text" className="input" placeholder="Opcional" value={modalForm.notes}
+                  onChange={e => setModalForm(f => ({ ...f, notes: e.target.value }))} />
               </div>
 
-              {modalError && <p style={{ color: '#dc2626', fontSize: 14, margin: '4px 0' }}>{modalError}</p>}
+              {modalError && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '4px 0' }}>{modalError}</p>}
             </div>
             <div className="modal-actions">
-              <button className="btn small" onClick={() => { setModalForm(null); setProducerQuery(''); setProducerResults([]) }} disabled={saving}>Cancelar</button>
-              <button className="btn small primary" onClick={handleSaveQuota} disabled={saving}>
-                {saving ? 'Guardando...' : 'Guardar cupo'}
-              </button>
+              <button className="btn small" onClick={closeModal} disabled={saving}>Cancelar</button>
+              <button className="btn small primary" onClick={handleSaveQuota} disabled={saving}>{saving ? 'Guardando...' : 'Guardar cupo'}</button>
             </div>
           </div>
         </div>
+      )}
+
+      {showImport && (
+        <ImportarCuposModal plots={plots} campaign={campaign} quotas={quotas} certs={certs}
+          onClose={() => setShowImport(false)}
+          onImported={() => { setShowImport(false); loadQuotas(campaignId) }} />
       )}
 
       {confirmDialog}

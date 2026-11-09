@@ -86,6 +86,18 @@ const QUICK_DOC_FILE_LABELS = {
   lavado_manos_caes:              { number: null, title: 'LAVADO DE MANOS EN LA OPERACIÓN DE TAMIZADO' },
   preparacion_soluciones_caes:    { number: null, title: 'CONTROL DE PREPARACIÓN DE SOLUCIONES' },
   manejo_residuos_caes:           { number: null, title: 'MANEJO DE RESIDUOS' },
+  // Documentos de campo por orden (ver fieldDocs.js).
+  origen_materia_prima:           { number: null, title: 'ORIGEN DE LA MATERIA PRIMA' },
+  fcmptph:                        { number: null, title: 'CONTROL DE MATERIA PRIMA, PRODUCCIÓN, PH Y TEMPERATURA' },
+  fcpo:                           { number: null, title: 'CONTROL DE PERSONAL OPERARIO' },
+  fet:                            { number: null, title: 'INSPECCIÓN DE ESTIBA Y TRANSPORTE' },
+  fqd:                            { number: null, title: 'QUEJAS Y DEVOLUCIONES' },
+  fmeh:                           { number: null, title: 'MANTENIMIENTO DE EQUIPOS Y HORNILLAS' },
+  fcclr:                          { number: null, title: 'CONTROL DE CLORO LIBRE RESIDUAL' },
+  fldh:                           { number: null, title: 'LIMPIEZA Y DESINFECCIÓN' },
+  fiae:                           { number: null, title: 'INSPECCIÓN DE AMBIENTES, EQUIPO Y PERSONAL' },
+  fcp:                            { number: null, title: 'CONTROL DE PLAGAS' },
+  fsea:                           { number: null, title: 'SEGUIMIENTO DE ENFERMEDADES Y ACCIDENTES' },
 }
 
 // El nombre de un documento puede depender de la orden (ej. CAES: "Control
@@ -146,6 +158,22 @@ export function buildFirmasHTML(firmantes) {
 // cooperative como primer parámetro (antes leía COOPERATIVE del módulo
 // lib/config, que ya no existe en core) -- los call sites (bucket 1/2/3,
 // pendientes de migrar) tienen que empezar a pasarlo.
+// "Contenedor N°" (plant_orders.internal_container_number) es opcional en una
+// venta nacional: si no se llenó, los documentos omiten la línea en vez de
+// mostrarla vacía; si se llenó, se imprime igual que en exportación.
+export function containerNumberApplies(order) {
+  return order?.sale_type !== 'nacional' || !!String(order?.internal_container_number ?? '').trim()
+}
+
+export function containerMetaHTML(order) {
+  if (!containerNumberApplies(order)) return ''
+  return `<div><span class="meta-label">Contenedor N°:</span> ${escapeHtml(order?.internal_container_number) ?? '—'}</div>`
+}
+
+export function containerExcelRows(order) {
+  return containerNumberApplies(order) ? [['Contenedor N°:', order?.internal_container_number ?? '']] : []
+}
+
 export function buildOrdenHeaderHTML(cooperative, order, certText, title) {
   const clientName = escapeHtml(order?.plant_clients?.name) ?? '—'
   return `<div class="formato-header">
@@ -154,7 +182,7 @@ export function buildOrdenHeaderHTML(cooperative, order, certText, title) {
       <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${escapeHtml(title)}</div>
     </div>
     <div class="formato-meta">
-      <div><span class="meta-label">Contenedor N°:</span> ${escapeHtml(order?.internal_container_number) ?? '—'}</div>
+      ${containerMetaHTML(order)}
       <div><span class="meta-label">Nº de venta:</span> ${escapeHtml(order?.sale_number) ?? '—'}</div>
       <div><span class="meta-label">Producto:</span> ${escapeHtml(order?.product) ?? '—'}</div>
       <div><span class="meta-label">Nº orden producción:</span> ${escapeHtml(order?.client_order_number ?? order?.order_code) ?? '—'}</div>
@@ -326,7 +354,7 @@ export async function resolveContainerContext(cooperative, order) {
       .select(`
         id, order_code, market, client_order_number, sale_number,
         plant_clients ( name ),
-        plant_production_batches ( id, description, brand, packaging_count, packaging_kg, pallet_count,
+        plant_production_batches ( id, client_batch_number, batch_code, description, brand, packaging_count, packaging_kg, pallet_count,
           plant_product_catalog ( description )
         )
       `)

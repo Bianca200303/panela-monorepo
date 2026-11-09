@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
@@ -8,6 +9,8 @@ import { getCoopCode } from '@panela/core/lib/formatos/shared'
 import { useConfirm } from '@panela/core/hooks/useConfirm'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 import DateInput from '@panela/core/components/DateInput'
 
@@ -30,8 +33,8 @@ function nextHygieneStatus(current) {
   return HYGIENE_STATUS_CYCLE[(idx + 1) % HYGIENE_STATUS_CYCLE.length]
 }
 function hygieneCellStyle(status) {
-  if (status === 'cumple') return { color: '#166534', background: '#dcfce7', borderColor: 'var(--success)' }
-  if (status === 'no_cumple') return { color: '#991b1b', background: '#fee2e2', borderColor: '#dc2626' }
+  if (status === 'cumple') return { color: 'var(--success-text)', background: 'var(--success-bg-strong)', borderColor: 'var(--success)' }
+  if (status === 'no_cumple') return { color: 'var(--danger-text)', background: 'var(--danger-bg)', borderColor: 'var(--danger)' }
   return { color: 'var(--primary-600)', background: 'rgba(15,76,92,0.10)', borderColor: 'var(--primary)' }
 }
 function hygieneCellSymbol(status) {
@@ -101,9 +104,11 @@ export default function HigienePage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_hygiene_controls')
       .select(`
         id, control_date, turno, area, responsible_person, observations, formato_codigo,
@@ -112,7 +117,7 @@ export default function HigienePage() {
           plant_personnel ( first_name, last_name ),
           plant_hygiene_control_criteria ( item_code, status )
         ),
-        registered_by:web_users!phc_created_by_fkey ( first_name, last_name )
+        audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!phc_created_by_fkey ( first_name, last_name )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
@@ -120,6 +125,7 @@ export default function HigienePage() {
       .order('area')
       .limit(100)
     setControls(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -300,6 +306,7 @@ export default function HigienePage() {
         }
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -320,6 +327,8 @@ export default function HigienePage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de higiene registrados aún." />
         ) : (
@@ -343,7 +352,7 @@ export default function HigienePage() {
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
                     Responsable: {c.responsible_person ?? '—'} · {nAttended}/{nWorkers} trabajador{nWorkers !== 1 ? 'es' : ''} presente{nAttended !== 1 ? 's' : ''}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                   {c.observations && <div className="meta" style={{ fontSize: 12 }}>Observaciones: {c.observations}</div>}
                 </div>
@@ -405,7 +414,7 @@ export default function HigienePage() {
           </div>
         </div>
         <p className="muted small" style={{ margin: '0 0 10px' }}>
-          Cada criterio arranca en ✓ (cumple) — clic en la celda para ciclar: ✓ cumple → ✕ no cumple → N/A → ✓ cumple.
+          Clic en la celda para cambiar su estado.
         </p>
 
         {personnel.length === 0 ? (
@@ -470,7 +479,7 @@ export default function HigienePage() {
         )}
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

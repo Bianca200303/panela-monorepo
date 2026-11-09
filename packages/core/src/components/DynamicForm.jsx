@@ -102,15 +102,25 @@ function DynamicField({ field, value, onChange, disabled }) {
         )
 
       default: // text
+        // field.suggestions (opcional): lista de un catálogo para elegir,
+        // sin dejar de poder escribir otro valor.
         return (
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={disabled}
-            required={required}
-            placeholder={required ? '' : 'Opcional'}
-          />
+          <>
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              disabled={disabled}
+              required={required}
+              placeholder={required ? '' : 'Opcional'}
+              list={field.suggestions?.length ? `dl-${key}` : undefined}
+            />
+            {field.suggestions?.length > 0 && (
+              <datalist id={`dl-${key}`}>
+                {field.suggestions.map(s => <option key={s} value={s} />)}
+              </datalist>
+            )}
+          </>
         )
     }
   }
@@ -128,7 +138,7 @@ function DynamicField({ field, value, onChange, disabled }) {
     <div className="field" style={{ margin: 0, opacity: field._deprecated ? 0.6 : 1 }}>
       <label>
         {label}
-        {required && <span style={{ color: '#dc2626' }}> *</span>}
+        {required && <span style={{ color: 'var(--danger)' }}> *</span>}
         {field._deprecated && <span className="muted small" style={{ marginLeft: 4 }}>(campo anterior)</span>}
       </label>
       {renderInput()}

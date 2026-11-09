@@ -36,14 +36,14 @@ export default function TotalsPanel({ batches, kgPerQuintal, plannedKg, envasado
       </div>
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))', gap: 6,
-        padding: '8px 10px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 8,
+        padding: '8px 10px', background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: 8,
       }}>
         {items.map(it => (
           <Stat key={it.label} label={it.label} value={it.value} />
         ))}
       </div>
       {gapKg != null && Math.abs(gapKg) > 0.5 && (
-        <div style={{ marginTop: 6, fontSize: 12, color: '#b91c1c', display: 'flex', alignItems: 'center', gap: 5 }}>
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--danger-strong)', display: 'flex', alignItems: 'center', gap: 5 }}>
           <Icon name="alertTriangle" size={12} />
           Diferencia vs. planificado: {gapPct > 0 ? '-' : '+'}{Math.abs(gapPct).toFixed(1)}%
         </div>

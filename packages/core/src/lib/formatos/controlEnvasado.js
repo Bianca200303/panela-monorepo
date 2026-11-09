@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import { supabase } from '../supabase'
 import { loteLabel } from '../loteHelpers'
-import { PRINT_STYLES, fmtNum, quickDocFileName } from './shared'
+import { PRINT_STYLES, fmtNum, quickDocFileName, containerMetaHTML, containerExcelRows } from './shared'
 import { getLoteLabel, getBunqueLabel } from '../labels'
 
 export const FORMAT_TITLE_CONTROL_ENVASADO = 'CONTROL DEL ENVASADO'
@@ -151,7 +151,7 @@ export function buildPrintHTMLControlEnvasado(cooperative, order, containerNumbe
     </div>
     <div class="formato-meta">
       <div><span class="meta-label">OP:</span> ${order?.client_order_number ?? order?.order_code ?? '—'}</div>
-      <div><span class="meta-label">Contenedor N°:</span> ${order?.internal_container_number ?? '—'}</div>
+      ${containerMetaHTML(order)}
       <div><span class="meta-label">Nº de venta:</span> ${order?.sale_number ?? '—'}</div>
     </div>
   </div>
@@ -176,7 +176,7 @@ export function controlEnvasadoExcel(cooperative, order, containerNumber, { bloc
   const aoa = [
     ['CONTROL DEL ENVASADO'],
     ['OP:', order?.client_order_number ?? order?.order_code ?? ''],
-    ['Contenedor N°:', order?.internal_container_number ?? ''],
+    ...containerExcelRows(order),
     ['Nº de venta:', order?.sale_number ?? ''],
     [],
   ]

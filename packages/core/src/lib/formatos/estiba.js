@@ -1,11 +1,12 @@
-import { PRINT_STYLES, fmtDate, escapeHtml } from './shared'
+import { supabase } from '../supabase'
+import { escapeHtml, fmtDate, PRINT_STYLES } from './shared'
+import { fetchFieldContextForOrder, buildCampoDocHTML, campoSinRegistrosHTML, campoExcelHeader, writeCampoExcel, producerName } from './campoOrden'
 
 export const FORMAT_TITLE_ESTIBA = 'FORMATO DE INSPECCIÓN DE ESTIBA Y TRANSPORTE'
 
-// cooperative como primer parámetro (antes leía COOPERATIVE del módulo
-// lib/config, que ya no existe en core) -- los call sites lo inyectan desde
-// useCooperative().
-export function buildPrintHTMLEstiba(cooperative, formatCode, emittedAt, exitReg, stowage, exitItems, firmantes) {
+// Cuerpo del FET (transportista, vehículo, checklists, lotes), compartido
+// entre la versión emitida de Reportes y la versión por orden de abajo.
+export function buildEstibaBodyHTML(stowage, exitItems) {
   const CHECK = (v) => `<span style="color:${v?'#166534':'#991b1b'}">${v?'✓':'✗'}</span>`
   const checks1 = [
     ['Llanta repuesto', stowage.has_spare_tire], ['SOAT vigente', stowage.has_valid_soat],
@@ -25,31 +26,8 @@ export function buildPrintHTMLEstiba(cooperative, formatCode, emittedAt, exitReg
     <td>${ei.production_batches?.producers ? escapeHtml(`${ei.production_batches.producers.first_name} ${ei.production_batches.producers.last_name}`) : '—'}</td>
     <td style="text-align:right">${ei.quantity_kg ?? '—'} kg</td>
   </tr>`).join('')
-  const firmas = firmantes?.length > 0
-    ? firmantes.map(f => `
-    <div class="firma-bloque"><div class="firma-linea"></div>
-    <div class="firma-nombre">${escapeHtml(f.nombre)||'_______________________'}</div>
-    <div class="firma-cargo">${escapeHtml(f.cargo)||'Responsable'}</div></div>`).join('')
-    : `<div class="firma-bloque"><div class="firma-linea"></div><div class="firma-nombre">_______________________</div><div class="firma-cargo">Responsable</div></div>`
 
-  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
-<title>${formatCode}</title><style>${PRINT_STYLES}</style></head><body>
-<div class="formato-header">
-  <div style="text-align:center;margin-bottom:8px">
-    <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px">${cooperative?.name??''}</div>
-    <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_ESTIBA}</div>
-  </div>
-  <div class="formato-meta">
-    <div><span class="meta-label">Código:</span> <strong>${formatCode}</strong></div>
-    <div><span class="meta-label">Fecha emisión:</span> ${emittedAt ? new Date(emittedAt).toLocaleDateString('es-PE',{day:'2-digit',month:'2-digit',year:'numeric'}) : '___/___/______'}</div>
-    <div><span class="meta-label">N° Salida:</span> ${exitReg?.exit_code??'—'}</div>
-    <div><span class="meta-label">Fecha salida:</span> ${fmtDate(exitReg?.exit_date)}</div>
-    <div><span class="meta-label">Fecha inspección:</span> ${fmtDate(stowage.inspection_date)}</div>
-    <div><span class="meta-label">Guía remisión:</span> ${exitReg?.document_number??'—'}</div>
-  </div>
-</div>
-
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:10px">
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:10px">
   <div style="border:1px solid #555;padding:8px 10px">
     <div style="font-weight:700;font-size:11px;text-transform:uppercase;margin-bottom:6px">Datos del transportista</div>
     <div><span class="meta-label">Nombre / Razón social:</span> ${escapeHtml(stowage.carrier_name)}</div>
@@ -85,8 +63,92 @@ ${lotes?`<div style="font-weight:700;font-size:11px;text-transform:uppercase;mar
 <table class="formato-table">
   <thead><tr><th>#</th><th>Lote</th><th>Productor</th><th>Kg</th></tr></thead>
   <tbody>${lotes}</tbody>
-</table>`:''}
+</table>`:''}`
+}
 
-<div class="formato-firmas">${firmas}</div>
+// Vista de referencia de UNA inspección (sin encabezado de emisión): la usa
+// el Control de Unidad de Transporte de CAES para mostrar cómo llegó la
+// materia prima de la orden.
+export function buildEstibaReferenciaHTML(exitReg, stowage, exitItems) {
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
+<title>${FORMAT_TITLE_ESTIBA}</title><style>${PRINT_STYLES}</style></head><body>
+${salidaHeaderHTML({ exitReg, stowage })}
+${buildEstibaBodyHTML(stowage, exitItems)}
 </body></html>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Una inspección por guía de salida (exit_registration) que trajo lotes de
+// campo a esta orden. "Lotes incluidos" lista solo los de esa guía que
+// entraron a la orden, con los kg de la guía (no los usados en la orden --
+// esos están en Origen de la Materia Prima).
+const STOWAGE_SELECT = `id, exit_registration_id, inspection_date, carrier_name, carrier_ruc, carrier_license,
+  vehicle_brand, vehicle_plate, vehicle_condition, has_spare_tire, has_valid_soat, has_technical_review,
+  has_first_aid_kit, has_fire_extinguisher, has_gps, has_cleaning_supplies, floors_clean, walls_clean,
+  ceilings_clean, no_strange_odors, tarp_clean, pallets_clean, sack_clean_condition, sack_tied_condition, observations`
+
+export async function fetchEstibaOrdenData(cooperative, order) {
+  const ctx = await fetchFieldContextForOrder(cooperative, order)
+  if (ctx.exitRegIds.length === 0) return { certNames: ctx.certNames, salidas: [] }
+
+  const { data, error } = await supabase
+    .from('stowage_transport_inspections')
+    .select(STOWAGE_SELECT)
+    .in('exit_registration_id', ctx.exitRegIds)
+    .eq('cooperative_id', cooperative.id)
+  if (error) throw new Error(error.message)
+
+  const items = Object.values(ctx.exitItems)
+  const salidas = (data ?? []).map(stowage => {
+    const exitItems = items.filter(ei => ei.exit_registrations?.id === stowage.exit_registration_id)
+    return { stowage, exitReg: exitItems[0]?.exit_registrations ?? null, exitItems }
+  }).sort((a, b) => (a.exitReg?.exit_date ?? '').localeCompare(b.exitReg?.exit_date ?? ''))
+  return { certNames: ctx.certNames, salidas }
+}
+
+function salidaHeaderHTML({ exitReg, stowage }) {
+  return `<div class="lote-separator">
+    <strong>Salida ${escapeHtml(exitReg?.exit_code) ?? '—'}</strong> · Guía de remisión: ${escapeHtml(exitReg?.document_number) ?? '—'}
+    · Fecha salida: ${fmtDate(exitReg?.exit_date)} · Fecha inspección: ${fmtDate(stowage.inspection_date)}
+  </div>`
+}
+
+export function estibaOrdenPdf(cooperative, order, containerNumber, { certNames, salidas }, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fet',
+    title: FORMAT_TITLE_ESTIBA,
+    certNames,
+    firmantes,
+    body: salidas.length > 0
+      ? salidas.map(s => `<div class="lote-block">${salidaHeaderHTML(s)}${buildEstibaBodyHTML(s.stowage, s.exitItems)}</div>`).join('')
+      : campoSinRegistrosHTML('Ninguna guía de salida de los lotes de campo de esta orden tiene inspección de estiba registrada.'),
+  })
+}
+
+const yn = v => v ? '✓' : '✗'
+
+export function estibaOrdenExcel(cooperative, order, containerNumber, { certNames, salidas }) {
+  const header = campoExcelHeader(order, certNames, FORMAT_TITLE_ESTIBA)
+  const inspecciones = [...header, [
+    'N° Salida', 'Guía remisión', 'Fecha salida', 'Fecha inspección', 'Transportista', 'RUC', 'Licencia', 'Marca', 'Placa', 'Estado vehículo',
+    'Llanta repuesto', 'SOAT vigente', 'Revisión técnica', 'Botiquín', 'Extintor', 'GPS', 'Útiles limpieza',
+    'Piso limpio', 'Paredes limpias', 'Techo limpio', 'Sin olores extraños', 'Toldo limpio', 'Pallets limpios',
+    'Sacos: limpieza', 'Sacos: amarrado/cosido', 'Observaciones',
+  ]]
+  const lotes = [...header, ['N° Salida', 'Lote de campo', 'Productor', 'Kg']]
+  for (const { exitReg, stowage: s, exitItems } of salidas) {
+    inspecciones.push([
+      exitReg?.exit_code ?? '', exitReg?.document_number ?? '', exitReg?.exit_date ?? '', s.inspection_date ?? '',
+      s.carrier_name ?? '', s.carrier_ruc ?? '', s.carrier_license ?? '', s.vehicle_brand ?? '', s.vehicle_plate ?? '',
+      s.vehicle_condition === 'adequate' ? 'Apto' : 'No apto',
+      yn(s.has_spare_tire), yn(s.has_valid_soat), yn(s.has_technical_review), yn(s.has_first_aid_kit),
+      yn(s.has_fire_extinguisher), yn(s.has_gps), yn(s.has_cleaning_supplies),
+      yn(s.floors_clean), yn(s.walls_clean), yn(s.ceilings_clean), yn(s.no_strange_odors), yn(s.tarp_clean), yn(s.pallets_clean),
+      s.sack_clean_condition ?? '', s.sack_tied_condition ?? '', s.observations ?? '',
+    ])
+    for (const ei of exitItems) {
+      lotes.push([exitReg?.exit_code ?? '', ei.production_batches?.batch_code ?? '', producerName(ei.production_batches?.producers), ei.quantity_kg ?? ''])
+    }
+  }
+  writeCampoExcel('fet', order, containerNumber, [['Inspecciones', inspecciones], ['Lotes incluidos', lotes]])
 }

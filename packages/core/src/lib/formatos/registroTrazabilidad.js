@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import { supabase } from '../supabase'
-import { PRINT_STYLES, fmtNum, enrichRawMaterialEntries, quickDocFileName, escapeHtml } from './shared'
+import { PRINT_STYLES, fmtNum, enrichRawMaterialEntries, quickDocFileName, escapeHtml, containerMetaHTML, containerExcelRows } from './shared'
 import { getLoteLabel } from '../labels'
 import { loteBunques } from '../loteHelpers'
 
@@ -112,8 +112,7 @@ export async function fetchMateriaPrimaTransporteReferencia(orders) {
           vehicle_brand, vehicle_plate, vehicle_condition,
           has_spare_tire, has_valid_soat, has_technical_review, has_first_aid_kit, has_fire_extinguisher,
           has_gps, has_cleaning_supplies, floors_clean, walls_clean, ceilings_clean, no_strange_odors,
-          tarp_clean, pallets_clean, sack_clean_condition, sack_tied_condition, observations,
-          formato_codigo, emitted_at, firmantes
+          tarp_clean, pallets_clean, sack_clean_condition, sack_tied_condition, observations
         `)
         .in('exit_registration_id', exitRegIds)
     : { data: [] }
@@ -217,7 +216,7 @@ export function buildPrintHTMLRegistroTrazabilidad(cooperative, order, container
       <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_REGISTRO_TRAZABILIDAD}</div>
     </div>
     <div class="formato-meta">
-      <div><span class="meta-label">Contenedor N°:</span> ${order?.internal_container_number ?? '—'}</div>
+      ${containerMetaHTML(order)}
       <div><span class="meta-label">Nº de venta:</span> ${order?.sale_number ?? '—'}</div>
       <div><span class="meta-label">Producto:</span> ${order?.product ?? '—'}</div>
       <div><span class="meta-label">Nº orden producción:</span> ${order?.client_order_number ?? order?.order_code ?? '—'}</div>
@@ -271,7 +270,7 @@ export function registroTrazabilidadExcel(cooperative, order, containerNumber, {
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const header = [
     ['REGISTRO DE TRAZABILIDAD'],
-    ['Contenedor N°:', order?.internal_container_number ?? ''],
+    ...containerExcelRows(order),
     ['Nº de venta:', order?.sale_number ?? ''],
     ['Producto:', order?.product ?? ''],
     ['Nº orden producción:', order?.client_order_number ?? order?.order_code ?? ''],

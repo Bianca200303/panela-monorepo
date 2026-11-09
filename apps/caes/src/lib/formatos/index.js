@@ -2,6 +2,7 @@ import { fetchControlCalidadLoteData, controlCalidadLotePdf, controlCalidadLoteE
 import { fetchControlEnvasadoData, controlEnvasadoPdf, controlEnvasadoExcel } from '@panela/core/lib/formatos/controlEnvasado'
 import { getLoteLabel } from '@panela/core/lib/labels'
 import { COOPERATIVE } from '../config'
+import { buildFieldDocs } from '@panela/core/lib/formatos/fieldDocs'
 import { fetchRegistroTrazabilidad, registroTrazabilidadPdf, registroTrazabilidadExcel } from '@panela/core/lib/formatos/registroTrazabilidad'
 import { fetchHomogenizadoTamizadoData, registroHomogenizadoTamizadoPdf, registroHomogenizadoTamizadoExcel } from '@panela/core/lib/formatos/homogenizadoTamizado'
 import { fetchControlHigienePersonalCaesData, controlHigienePersonalCaesPdf, controlHigienePersonalCaesExcel } from './higienePersonalCaes'
@@ -99,7 +100,7 @@ const ALL_QUICK_DOCS = [
     // fetchData/buildPdfHtml: verificacionLimpieza.js vive en packages/core
     // (compartido, ya no conoce la cooperativa) -- se envuelve para
     // pasarle COOPERATIVE local, preservando la misma forma de llamada que
-    // usa QuickDocsModal.jsx/InformeOrden.jsx para cualquier doc de esta
+    // usa QuickDocsModal.jsx para cualquier doc de esta
     // lista (fetchData(order, kgPerQuintal, batch, tipo), buildPdfHtml(order,
     // containerNumber, data, firmantes)).
     fetchData: (order, kgPerQuintal, batch, tipo) => fetchControlVerificacionLimpiezaData(COOPERATIVE, order, kgPerQuintal),
@@ -243,3 +244,7 @@ export const QUICK_DOCS = ALL_QUICK_DOCS.filter(d => {
   if (d.key === 'packing_list_nacional_caes') return !!COOPERATIVE?.features?.ventaNacionalExportacion
   return true
 })
+
+// Documentos de campo por orden (pestaña Campo de QuickDocsModal) -- misma
+// lista para las dos cooperativas, ver packages/core/src/lib/formatos/fieldDocs.js.
+export const FIELD_DOCS = buildFieldDocs(COOPERATIVE)

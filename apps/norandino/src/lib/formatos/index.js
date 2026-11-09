@@ -1,4 +1,5 @@
 import { COOPERATIVE } from '../config'
+import { buildFieldDocs } from '@panela/core/lib/formatos/fieldDocs'
 import { fetchOrdenProduccionData, ordenProduccionPdf, ordenProduccionExcel } from '@panela/core/lib/formatos/ordenProduccion'
 import { fetchControlCalidadLoteData, controlCalidadLotePdf, controlCalidadLoteExcel } from '@panela/core/lib/formatos/controlCalidadLote'
 import { fetchControlEnvasadoData, controlEnvasadoPdf, controlEnvasadoExcel } from '@panela/core/lib/formatos/controlEnvasado'
@@ -119,7 +120,7 @@ export const QUICK_DOCS = [
     // fetchData/buildPdfHtml: verificacionLimpieza.js vive en packages/core
     // (compartido, ya no conoce la cooperativa) -- se envuelve para
     // pasarle COOPERATIVE local, preservando la misma forma de llamada que
-    // usa QuickDocsModal.jsx/InformeOrden.jsx para cualquier doc de esta
+    // usa QuickDocsModal.jsx para cualquier doc de esta
     // lista (fetchData(order, kgPerQuintal, batch, tipo), buildPdfHtml(order,
     // containerNumber, data, firmantes)).
     fetchData: (order, kgPerQuintal, batch, tipo) => fetchControlVerificacionLimpiezaData(COOPERATIVE, order, kgPerQuintal),
@@ -174,3 +175,7 @@ export const QUICK_DOCS = [
     buildExcel: resumenTrazabilidadExcel,
   },
 ]
+
+// Documentos de campo por orden (pestaña Campo de QuickDocsModal) -- misma
+// lista para las dos cooperativas, ver packages/core/src/lib/formatos/fieldDocs.js.
+export const FIELD_DOCS = buildFieldDocs(COOPERATIVE)

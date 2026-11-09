@@ -1,13 +1,15 @@
-import { PRINT_STYLES, fmtDate, escapeHtml } from './shared'
+import { supabase } from '../supabase'
+import { escapeHtml } from './shared'
+import { fetchFieldContextForOrder, buildCampoDocHTML, campoSinRegistrosHTML, campoLoteHeaderHTML, campoExcelHeader, writeCampoExcel, producerName } from './campoOrden'
 
-export const FORMAT_TYPE_FCPO  = 'FCPO'
 export const FORMAT_TITLE_FCPO = 'FORMATO DE CONTROL DE PERSONAL OPERARIO'
 
 export const WORK_AREA_LABELS = {
   M:   'Molienda',
-  H:   'Hornilla',
+  // Mismos nombres que la app móvil (WorkArea), que es donde se registran.
+  H:   'Cámara de combustión (hornero)',
   TT:  'Tratamiento Térmico',
-  TEA: 'Taller de Empaque y Almacén',
+  TEA: 'Tamizado, Empaque y Almacenamiento',
   rr:  'Otros',
 }
 
@@ -23,14 +25,9 @@ const FCPO_CRITERIA = [
   { key: 'no_wounds',         label: 'Sin heridas / cortes' },
 ]
 
-export function buildPrintHTMLFcpo(cooperative, formatCode, emittedAt, batch, producer, areas, firmantes) {
-  const emisionDate = emittedAt
-    ? new Date(emittedAt).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' })
-    : '___/___/______'
-
-  const producerName = producer ? escapeHtml(`${producer.first_name} ${producer.last_name}`) : '—'
-  const moduleName   = producer?.coop_modules?.name ?? '—'
-
+// Cuerpo del FCPO (tablas por área + resumen de cumplimiento), compartido
+// entre la versión emitida de Reportes y la versión por orden de abajo.
+export function buildFcpoAreasHTML(areas) {
   const totalWorkers   = areas.reduce((s, a) => s + (a.items?.length ?? 0), 0)
   const totalCriteria  = totalWorkers * FCPO_CRITERIA.length
   const totalCompliant = areas.reduce((s, a) =>
@@ -87,53 +84,71 @@ export function buildPrintHTMLFcpo(cooperative, formatCode, emittedAt, batch, pr
     `
   }).join('')
 
-  const firmasHTML = (() => {
-    if (firmantes?.length > 0) {
-      return firmantes.map(f => `
-        <div class="firma-bloque">
-          <div class="firma-linea"></div>
-          <div class="firma-nombre">${escapeHtml(f.nombre) || '_______________________'}</div>
-          <div class="firma-cargo">${escapeHtml(f.cargo) || 'Responsable'}</div>
-        </div>`).join('')
-    }
-    return `<div class="firma-bloque"><div class="firma-linea"></div><div class="firma-nombre">_______________________</div><div class="firma-cargo">Responsable</div></div>`
-  })()
-
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <title>${formatCode ?? FORMAT_TYPE_FCPO}</title>
-  <style>
-    ${PRINT_STYLES}
-    .formato-table th { vertical-align: bottom; }
-  </style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px">${cooperative?.name ?? ''}</div>
-      <div style="font-size:15px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FCPO}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong>${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Lote de campo:</span> ${batch?.batch_code ?? '—'}</div>
-      <div><span class="meta-label">Fecha de proceso:</span> ${fmtDate(batch?.process_date)}</div>
-      <div><span class="meta-label">Productor:</span> ${producerName}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-    </div>
-  </div>
-
-  ${areaBlocks}
+  return `${areaBlocks}
 
   <div style="margin-top:12px;padding:6px 8px;background:#f0f0f0;border:1px solid #ccc;font-size:11px;display:flex;gap:32px">
     <span><strong>Total trabajadores evaluados:</strong> ${totalWorkers}</span>
     <span><strong>Total criterios:</strong> ${FCPO_CRITERIA.length} por trabajador</span>
     <span><strong>Cumplimiento global:</strong> <strong style="color:${Number(pctCumple) >= 90 ? '#166534' : '#991b1b'}">${pctCumple}%</strong></span>
-  </div>
+  </div>`
+}
 
-  <div class="formato-firmas">${firmasHTML}</div>
-</body>
-</html>`
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Un bloque por lote de campo de la orden que tenga control de personal
+// registrado (worker_controls, se carga desde el celular por lote).
+export async function fetchFcpoOrdenData(cooperative, order) {
+  const ctx = await fetchFieldContextForOrder(cooperative, order)
+  if (ctx.prodBatchIds.length === 0) return { certNames: ctx.certNames, lotes: [] }
+
+  const { data, error } = await supabase
+    .from('worker_controls')
+    .select('production_batch_id, work_area, observations, worker_control_items ( worker_name, uniform_complete, no_makeup, nails_short_clean, nails_no_polish, hands_clean, no_jewelry, hair_covered, no_beard, no_wounds )')
+    .in('production_batch_id', ctx.prodBatchIds)
+    .eq('cooperative_id', cooperative.id)
+    .order('work_area')
+  if (error) throw new Error(error.message)
+
+  const areasByBatch = {}
+  for (const wc of data ?? []) {
+    ;(areasByBatch[wc.production_batch_id] ??= []).push({ work_area: wc.work_area, observations: wc.observations, items: wc.worker_control_items ?? [] })
+  }
+  const batchById = {}
+  for (const ei of Object.values(ctx.exitItems)) if (ei.production_batches) batchById[ei.production_batches.id] = ei.production_batches
+  const lotes = Object.entries(areasByBatch)
+    .map(([batchId, areas]) => ({ batch: batchById[batchId], areas }))
+    .sort((a, b) => (a.batch?.process_date ?? '').localeCompare(b.batch?.process_date ?? ''))
+  return { certNames: ctx.certNames, lotes }
+}
+
+export function fcpoOrdenPdf(cooperative, order, containerNumber, { certNames, lotes }, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fcpo',
+    title: FORMAT_TITLE_FCPO,
+    certNames,
+    firmantes,
+    styles: '.formato-table th { vertical-align: bottom; }',
+    body: lotes.length > 0
+      ? lotes.map(l => `<div class="lote-block">${campoLoteHeaderHTML(l.batch)}${buildFcpoAreasHTML(l.areas)}</div>`).join('')
+      : campoSinRegistrosHTML('Ningún lote de campo de esta orden tiene control de personal registrado.'),
+  })
+}
+
+export function fcpoOrdenExcel(cooperative, order, containerNumber, { certNames, lotes }) {
+  const rows = [...campoExcelHeader(order, certNames, FORMAT_TITLE_FCPO), [
+    'Lote de campo', 'Productor', 'Módulo', 'F. proceso', 'Área', 'Trabajador', ...FCPO_CRITERIA.map(c => c.label), 'No conformidades', 'Obs. área',
+  ]]
+  for (const { batch, areas } of lotes) {
+    for (const area of areas) {
+      for (const w of area.items) {
+        rows.push([
+          batch?.batch_code ?? '', producerName(batch?.producers), batch?.producers?.coop_modules?.name ?? '', batch?.process_date ?? '',
+          WORK_AREA_LABELS[area.work_area] ?? area.work_area, w.worker_name ?? '',
+          ...FCPO_CRITERIA.map(c => w[c.key] ? '✓' : '✗'),
+          FCPO_CRITERIA.filter(c => !w[c.key]).map(c => c.label).join(', '),
+          area.observations ?? '',
+        ])
+      }
+    }
+  }
+  writeCampoExcel('fcpo', order, containerNumber, [['Control de personal', rows]])
 }

@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import { loteLabel, loteKg } from '../loteHelpers'
-import { PRINT_STYLES, fmtNum, buildFirmasHTML, buildOrdenHeaderHTML, quickDocFileName } from './shared'
+import { PRINT_STYLES, fmtNum, buildFirmasHTML, buildOrdenHeaderHTML, quickDocFileName, containerExcelRows } from './shared'
 import { getLoteLabel } from '../labels'
 import { fetchOrderCertNames } from './registroTrazabilidad'
 
@@ -149,7 +149,7 @@ export function ordenProduccionExcel(cooperative, order, containerNumber, { rows
 
   const aoa = [
     ['ORDEN DE PRODUCCIÓN'],
-    ['Contenedor N°:', order?.internal_container_number ?? ''],
+    ...containerExcelRows(order),
     ['Producto:', order?.product ?? ''],
     ['Cliente:', order?.plant_clients?.name ?? ''],
     ['Nº de venta:', order?.sale_number ?? ''],

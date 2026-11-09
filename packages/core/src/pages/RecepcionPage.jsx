@@ -2,10 +2,14 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
 import { useAuthStore } from '../store/authStore'
+import { trackAction } from '../lib/usage'
 import { pctToMgkg, mgkgToPct } from '../lib/loteHelpers'
 import { SkeletonList } from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import Icon from '../components/Icon'
+import AuditStamp from '../components/AuditStamp'
+import { AUDIT_COLUMNS } from '../lib/audit'
 import SearchFilterBar from '../components/SearchFilterBar'
 
 function formatDate(dateStr) {
@@ -29,6 +33,7 @@ export default function RecepcionPage() {
   const [pendientes, setPendientes] = useState([])
   const [recibidas,  setRecibidas]  = useState([])
   const [loading,    setLoading]    = useState(true)
+  const [loadError,  setLoadError]  = useState('')
   const [selected,   setSelected]   = useState(null)
   const [items,      setItems]      = useState([])
   const [notes,      setNotes]      = useState('')
@@ -55,10 +60,10 @@ export default function RecepcionPage() {
 
   async function loadData() {
     setLoading(true)
-    const { data: exits } = await supabase
+    const { data: exits, error: exitsErr } = await supabase
       .from('exit_registrations')
       .select(`
-        id, exit_code, exit_date, total_kg, document_number, destination,
+        id, exit_code, exit_date, total_kg, document_number, destination, ${AUDIT_COLUMNS},
         exit_items (
           id, quantity_kg, bags_count, item_document_number,
           production_batches (
@@ -72,19 +77,30 @@ export default function RecepcionPage() {
       .ilike('destination', `%${COOPERATIVE.code}%`)
       .order('exit_date', { ascending: false })
 
-    const { data: receptions } = await supabase
+    const { data: receptions, error: receptionsErr } = await supabase
       .from('exit_receptions')
       .select(`
-        id, exit_registration_id, received_at, notes, status,
+        id, exit_registration_id, received_at, notes, status, ${AUDIT_COLUMNS},
         exit_reception_items ( id, exit_item_id, quantity_kg_sent, quantity_kg_received, discrepancy_reason, cert_status ),
         quality_evaluations ( id, exit_item_id, humidity_pct, impurities_pct, impurities_mgkg, sack_condition, appearance )
       `)
       .eq('cooperative_id', COOPERATIVE.id)
 
-    const { data: homoInputs } = await supabase
+    const { data: homoInputs, error: homoErr } = await supabase
       .from('plant_homogenization_inputs')
       .select('source_exit_item_id, quantity_kg')
       .eq('cooperative_id', COOPERATIVE.id)
+
+    // Las tres consultas dependen entre sí: si falla la de recepciones, todas
+    // las salidas aparecerían como "pendientes" (y se podrían volver a
+    // recibir). Ante cualquier fallo no se muestra nada a medias.
+    const loadErr = exitsErr ?? receptionsErr ?? homoErr
+    if (loadErr) {
+      setLoadError(loadErr.message)
+      setLoading(false)
+      return
+    }
+    setLoadError('')
 
     const kgUsed = {}
     for (const h of (homoInputs ?? [])) {
@@ -453,6 +469,7 @@ export default function RecepcionPage() {
       }
 
       setSelected(null)
+      trackAction('registrar_recepcion')
       loadData()
     } catch (err) {
       setError(err.message ?? 'Error al guardar')
@@ -467,10 +484,7 @@ export default function RecepcionPage() {
 
   return (
     <div>
-      <h2 style={{ margin: '0 0 4px' }}>Recepción de materia prima</h2>
-      <p className="muted small" style={{ margin: '0 0 24px' }}>
-        Registra la llegada de lotes desde campo, verifica cantidades y condición de cada saco.
-      </p>
+      <h2 style={{ margin: '0 0 16px' }}>Recepción de materia prima</h2>
 
       <SearchFilterBar
         search={search} onSearchChange={setSearch}
@@ -487,6 +501,8 @@ export default function RecepcionPage() {
           <SkeletonList count={2} />
           <SkeletonList count={2} />
         </div>
+      ) : loadError ? (
+        <ErrorState message="No se pudieron cargar las salidas y recepciones. Revise la conexión e intente de nuevo." onRetry={loadData} />
       ) : (
         <div className="split">
           {/* ── Pendientes ── */}
@@ -512,6 +528,7 @@ export default function RecepcionPage() {
                         {e.document_number ? `G.R: ${e.document_number}` : 'Sin G.R'}
                       </strong>
                       <span className="tag warn">Pendiente</span>
+                      <AuditStamp row={e} />
                       {missingDocs && (
                         <span className="tag warn" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <Icon name="alertTriangle" size={12} /> Datos incompletos
@@ -572,6 +589,7 @@ export default function RecepcionPage() {
                           {e.document_number ? `G.R: ${e.document_number}` : 'Sin G.R'}
                         </strong>
                         <span className="tag ok">Recibida</span>
+                        <AuditStamp row={reception} />
                         {missingSomething && (
                           <span className="tag warn" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                             <Icon name="alertTriangle" size={12} /> Datos incompletos
@@ -633,7 +651,7 @@ export default function RecepcionPage() {
                         )}
                       </footer>
                       {isEditingDocs && docsError && (
-                        <p style={{ color: '#dc2626', fontSize: 12, margin: '8px 0 0', padding: '6px 10px', background: '#fee2e2', borderRadius: 6, border: '1px solid #fca5a5' }}>
+                        <p style={{ color: 'var(--danger)', fontSize: 12, margin: '8px 0 0', padding: '6px 10px', background: 'var(--danger-bg)', borderRadius: 6, border: '1px solid var(--danger-border)' }}>
                           {docsError}
                         </p>
                       )}
@@ -681,7 +699,7 @@ export default function RecepcionPage() {
                                       padding: '8px 10px', background: 'rgba(15,76,92,0.10)', border: '1.5px solid var(--primary)', borderRadius: 8,
                                     }}>
                                       {locked && (
-                                        <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 600 }}>
+                                        <div style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600 }}>
                                           Ya se usaron {kgUsed.toFixed(1)} kg de este lote en homogeneizado — solo se puede corregir el comprobante.
                                         </div>
                                       )}
@@ -703,7 +721,7 @@ export default function RecepcionPage() {
                                           <>
                                             <div>
                                               <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', display: 'block', marginBottom: 4 }}>
-                                                Kg recibidos <span style={{ color: '#dc2626' }}>*</span>
+                                                Kg recibidos <span style={{ color: 'var(--danger)' }}>*</span>
                                               </label>
                                               <input
                                                 type="number" min="0" step="0.1"
@@ -715,7 +733,7 @@ export default function RecepcionPage() {
                                             </div>
                                             <div>
                                               <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', display: 'block', marginBottom: 4 }}>
-                                                Condición del saco <span style={{ color: '#dc2626' }}>*</span>
+                                                Condición del saco <span style={{ color: 'var(--danger)' }}>*</span>
                                               </label>
                                               <select
                                                 className="input"
@@ -729,7 +747,7 @@ export default function RecepcionPage() {
                                             </div>
                                             <div>
                                               <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', display: 'block', marginBottom: 4 }}>
-                                                Aspecto general <span style={{ color: '#dc2626' }}>*</span>
+                                                Aspecto general <span style={{ color: 'var(--danger)' }}>*</span>
                                               </label>
                                               <select
                                                 className="input"
@@ -786,8 +804,8 @@ export default function RecepcionPage() {
 
                                       {!locked && editHasDiff && (
                                         <div>
-                                          <label style={{ fontSize: 11, fontWeight: 700, color: '#b45309', display: 'block', marginBottom: 4 }}>
-                                            Motivo discrepancia <span style={{ color: '#dc2626' }}>*</span>
+                                          <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--warning-strong)', display: 'block', marginBottom: 4 }}>
+                                            Motivo discrepancia <span style={{ color: 'var(--danger)' }}>*</span>
                                           </label>
                                           <input
                                             type="text" className="input"
@@ -807,18 +825,18 @@ export default function RecepcionPage() {
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '2px 16px' }}>
                                       <div><span style={{ fontWeight: 600, color: '#000' }}>Enviados: </span>{ri.quantity_kg_sent} kg</div>
                                       <div>
-                                        <span style={{ fontWeight: 600, color: hasDiff ? '#b45309' : '#000' }}>Recibidos: </span>
-                                        <span style={{ color: hasDiff ? '#b45309' : '#000', fontWeight: hasDiff ? 700 : 400 }}>{ri.quantity_kg_received} kg</span>
+                                        <span style={{ fontWeight: 600, color: hasDiff ? 'var(--warning-strong)' : '#000' }}>Recibidos: </span>
+                                        <span style={{ color: hasDiff ? 'var(--warning-strong)' : '#000', fontWeight: hasDiff ? 700 : 400 }}>{ri.quantity_kg_received} kg</span>
                                       </div>
                                       {hasDiff && (
-                                        <div style={{ color: '#b45309', fontWeight: 600 }}>
+                                        <div style={{ color: 'var(--warning-strong)', fontWeight: 600 }}>
                                           {Number(ri.quantity_kg_received) > Number(ri.quantity_kg_sent) ? 'Sobran ' : 'Faltan '}
                                           {Math.abs(Number(ri.quantity_kg_sent) - Number(ri.quantity_kg_received)).toFixed(1)} kg
                                         </div>
                                       )}
                                     </div>
                                     {hasDiff && ri.discrepancy_reason && (
-                                      <div style={{ marginTop: 3, color: '#b45309' }}>
+                                      <div style={{ marginTop: 3, color: 'var(--warning-strong)' }}>
                                         <span style={{ fontWeight: 600 }}>Motivo: </span>{ri.discrepancy_reason}
                                       </div>
                                     )}
@@ -849,7 +867,7 @@ export default function RecepcionPage() {
                             )
                           })}
                           {reception.notes && (
-                            <div style={{ fontSize: 12, color: '#000', padding: '6px 10px', background: '#fffbeb', border: '1px solid #fef08a', borderRadius: 6 }}>
+                            <div style={{ fontSize: 12, color: '#000', padding: '6px 10px', background: 'var(--warning-bg)', border: '1px solid var(--warning-border-alt)', borderRadius: 6 }}>
                               <span style={{ fontWeight: 600 }}>Observaciones: </span>{reception.notes}
                             </div>
                           )}
@@ -954,7 +972,7 @@ export default function RecepcionPage() {
                       {/* Kg recibidos */}
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', display: 'block', marginBottom: 4 }}>
-                          Kg recibidos <span style={{ color: '#dc2626' }}>*</span>
+                          Kg recibidos <span style={{ color: 'var(--danger)' }}>*</span>
                         </label>
                         <input
                           type="number" min="0" step="0.1" className="input"
@@ -963,7 +981,7 @@ export default function RecepcionPage() {
                           onChange={e => updateItem(i, 'quantity_kg_received', e.target.value)}
                         />
                         {hasDiff && (
-                          <div style={{ fontSize: 11, color: '#b45309', marginTop: 3 }}>
+                          <div style={{ fontSize: 11, color: 'var(--warning-strong)', marginTop: 3 }}>
                             {Number(item.quantity_kg_received) > Number(item.quantity_kg_sent) ? 'Sobran ' : 'Faltan '}
                             {Math.abs(Number(item.quantity_kg_sent) - Number(item.quantity_kg_received)).toFixed(1)} kg
                           </div>
@@ -973,8 +991,8 @@ export default function RecepcionPage() {
                       {/* Motivo discrepancia */}
                       {hasDiff && (
                         <div style={{ gridColumn: 'span 2' }}>
-                          <label style={{ fontSize: 11, fontWeight: 600, color: '#b45309', display: 'block', marginBottom: 4 }}>
-                            Motivo discrepancia <span style={{ color: '#dc2626' }}>*</span>
+                          <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--warning-strong)', display: 'block', marginBottom: 4 }}>
+                            Motivo discrepancia <span style={{ color: 'var(--danger)' }}>*</span>
                           </label>
                           <input
                             type="text" className="input"
@@ -989,7 +1007,7 @@ export default function RecepcionPage() {
                       {/* Condición del saco */}
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', display: 'block', marginBottom: 4 }}>
-                          Condición del saco <span style={{ color: '#dc2626' }}>*</span>
+                          Condición del saco <span style={{ color: 'var(--danger)' }}>*</span>
                         </label>
                         <select
                           className="input"
@@ -1005,7 +1023,7 @@ export default function RecepcionPage() {
                       {/* Aspecto general */}
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', display: 'block', marginBottom: 4 }}>
-                          Aspecto general <span style={{ color: '#dc2626' }}>*</span>
+                          Aspecto general <span style={{ color: 'var(--danger)' }}>*</span>
                         </label>
                         <select
                           className="input"
@@ -1094,7 +1112,7 @@ export default function RecepcionPage() {
               </div>
 
               {error && (
-                <p style={{ color: '#dc2626', fontSize: 13, margin: 0, padding: '8px 12px', background: '#fef2f2', borderRadius: 6, border: '1px solid #fecaca' }}>
+                <p style={{ color: 'var(--danger)', fontSize: 13, margin: 0, padding: '8px 12px', background: 'var(--danger-bg-soft)', borderRadius: 6, border: '1px solid var(--danger-border-soft)' }}>
                   {error}
                 </p>
               )}

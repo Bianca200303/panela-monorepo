@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import {
@@ -6,13 +7,18 @@ import {
 } from '../lib/formatos/transportUnitControlsCaes'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
 import { fetchMateriaPrimaTransporteReferencia } from '@panela/core/lib/formatos/registroTrazabilidad'
-import { buildPrintHTMLEstiba } from '@panela/core/lib/formatos/estiba'
+import { buildEstibaReferenciaHTML } from '@panela/core/lib/formatos/estiba'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
-import { formatDate, PACKAGING_TYPE_LABELS } from '@panela/core/lib/loteHelpers'
+import { formatDate, PACKAGING_TYPE_LABELS, loteLabel } from '@panela/core/lib/loteHelpers'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
+import SelectOrOther from '@panela/core/components/SelectOrOther'
+import InlineEditField from '@panela/core/components/InlineEditField'
 import { useConfirm } from '@panela/core/hooks/useConfirm'
+import { useActiveCatalog, catalogLabel } from '@panela/core/hooks/useActiveCatalog'
 
 // Control de la Unidad de Transporte (CAESP-PP-BPM-RE-CUT-001) -- SOLO
 // CAES. A diferencia de Sellado/Envasado o Monitoreo del Tamizado (que
@@ -39,6 +45,7 @@ function emptyForm() {
   const f = {
     control_date: todayISO(),
     lugar_partida: '', lugar_destino: '', guia_remision: '',
+    guia_remision_transportista: '', es_tramo_final: false,
     transportista_razon_social: '', transportista_constancia_mtc: '', chofer_nombre: '', chofer_licencia: '',
     vehiculo_marca: '', vehiculo_placa: '', vehiculo_tipo: '',
     observaciones_vehiculo: '', accion_correctiva_vehiculo: '',
@@ -59,20 +66,44 @@ function valuesFromRecord(r) {
   return f
 }
 
-// Prefiltra la guía con la del Packing List-Nacional de este contenedor (si
-// existe): el primer control que se cargue toma la guía "tramo interno", el
-// resto toma la "tramo final" -- ambas deben coincidir con el Packing List
-// (confirmado con el usuario), pero se sigue pudiendo editar libremente acá
-// porque el CUT del tramo final normalmente se completa días después de
-// que el Packing List ya se cerró (ver comentario en la migración).
-async function suggestGuiaFromPackingList(containerId, isFirstControl) {
-  const { data } = await supabase
-    .from('plant_packing_list_nacional_caes')
-    .select('guia_tramo_interno, guia_tramo_final')
-    .eq('container_id', containerId)
-    .maybeSingle()
-  if (!data) return ''
-  return (isFirstControl ? data.guia_tramo_interno : data.guia_tramo_final) ?? ''
+// Guías de remisión: este control (el tramo = un camión en un viaje) es el
+// ÚNICO lugar donde se escriben -- GR CAES (remitente) y GR del
+// transportista. Packing Lists, Orden de Salida y Resumen solo las leen
+// (lib/formatos/tramos.js). Ver migración 20261107100000.
+
+const normRuta = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+
+const normGuia = (s) => String(s ?? '').trim().toLowerCase()
+
+// Validación de guías de un tramo contra los OTROS tramos del mismo despacho
+// (la GR CAES además es única en toda la BD, ver índice uq_ptucc_guia_remision).
+// Una misma guía en dos tramos significa que se escribió dos veces o mal.
+function guiaDuplicadaError(others, { grCaes, grTransp }) {
+  if (grCaes && others.some(r => normGuia(r.guia_remision) === normGuia(grCaes))) {
+    return `La GR CAES ${grCaes} ya está registrada en otro tramo de este despacho.`
+  }
+  if (grTransp && others.some(r => normGuia(r.guia_remision_transportista) === normGuia(grTransp))) {
+    return `La GR transportista ${grTransp} ya está registrada en otro tramo de este despacho.`
+  }
+  return null
+}
+
+// Completar la GR del transportista desde la lista, sin abrir el control
+// completo (suele llegar días después).
+function InlineGrTransportista({ row, others, onSaved }) {
+  const save = async (value) => {
+    const dup = value && guiaDuplicadaError(others, { grTransp: value })
+    if (dup) throw new Error(dup)
+    const { error } = await supabase
+      .from('plant_transport_unit_controls_caes')
+      .update({ guia_remision_transportista: value || null })
+      .eq('id', row.id)
+    if (error) throw new Error(error.message)
+    onSaved()
+  }
+  return (
+    <InlineEditField label="GR transportista" value={row.guia_remision_transportista} emptyTone="warning" inputWidth={160} onSave={save} />
+  )
 }
 
 // Prefiltra "Presentación" y "Total (unidades)" con los datos reales de
@@ -125,8 +156,8 @@ function CheckChip({ item, value, onChange }) {
 // guía de remisión de materia prima que alimentó la producción de la
 // orden, que expande al detalle exacto del control de transporte que se
 // llenó en el celular (stowage_transport_inspections). Reusa
-// buildPrintHTMLEstiba -- el mismo HTML que ya arma el PDF oficial FET y
-// "Ver informe completo" -- en vez de reinventar el renderizado del detalle.
+// buildEstibaReferenciaHTML -- el mismo cuerpo que el FET de la pestaña
+// Campo de Documentos -- en vez de reinventar el renderizado del detalle.
 function MateriaPrimaReferenceRow({ entry }) {
   const [open, setOpen] = useState(false)
   const { exitReg, stowage, exitItems } = entry
@@ -163,7 +194,7 @@ function MateriaPrimaReferenceRow({ entry }) {
       {open && (
         stowage ? (
           <iframe
-            srcDoc={buildPrintHTMLEstiba(COOPERATIVE, stowage.formato_codigo ?? '(borrador)', stowage.emitted_at, exitReg, stowage, exitItems, stowage.firmantes ?? [])}
+            srcDoc={buildEstibaReferenciaHTML(exitReg, stowage, exitItems)}
             style={{ width: '100%', minHeight: 380, border: 'none', borderTop: '1px solid var(--border)', display: 'block' }}
             title={`FET-${exitReg.exit_code}`}
             onLoad={e => {
@@ -210,39 +241,55 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_transport_unit_controls_caes')
-      .select('*, estibadores:plant_transport_unit_control_estibadores_caes(*), registered_by:web_users!ptucc_created_by_fkey ( first_name, last_name )')
+      .select('*, estibadores:plant_transport_unit_control_estibadores_caes(*), lotes:plant_transport_unit_control_lotes_caes ( plant_batch_id ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!ptucc_created_by_fkey ( first_name, last_name )')
       .eq('container_id', container.id)
       .order('control_date', { ascending: false })
     setRows(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
-  async function startNew() {
+  // Catálogos para elegir en vez de escribir: empresas de transporte
+  // (Catálogos → Empresas de transporte) y personal de planta (estibadores).
+  const companies = useActiveCatalog('transportistas')
+  const personnel = useActiveCatalog('personal')
+  const companyOptions = companies.map(c => ({ value: c.razon_social, label: c.ruc ? `${c.razon_social} (RUC ${c.ruc})` : c.razon_social, company: c }))
+  const personnelOptions = personnel.map(p => ({ value: catalogLabel('personal', p), label: catalogLabel('personal', p) }))
+
+  // Lotes del despacho y cuáles van en este camión. Lo normal es un solo
+  // camión con todos los lotes (vienen todos marcados); a veces la carga no
+  // entra y va en varios camiones, cada uno con sus guías y sus lotes.
+  const allBatches = (orders ?? []).flatMap(o => o.plant_production_batches ?? [])
+  const [loteIds, setLoteIds] = useState([])
+  const toggleLote = (id) => setLoteIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+
+  function startNew() {
     setEditingId(null)
-    setForm(emptyForm())
+    const { presentacion, totalUnidades } = suggestPresentacionFromOrders(orders)
+    setForm({
+      ...emptyForm(),
+      ...(presentacion ? { presentacion } : {}),
+      ...(totalUnidades ? { total_unidades: totalUnidades } : {}),
+    })
+    setLoteIds(allBatches.map(b => b.id))
     setEstibadores([])
     setEstibadorForm({ full_name: '', dni: '' })
     setError('')
     setView('form')
-    const guia = await suggestGuiaFromPackingList(container.id, rows.length === 0)
-    const { presentacion, totalUnidades } = suggestPresentacionFromOrders(orders)
-    setForm(f => ({
-      ...f,
-      ...(guia ? { guia_remision: guia } : {}),
-      ...(presentacion ? { presentacion } : {}),
-      ...(totalUnidades ? { total_unidades: totalUnidades } : {}),
-    }))
   }
 
   function startEdit(r) {
     setEditingId(r.id)
     setForm(valuesFromRecord(r))
+    setLoteIds((r.lotes ?? []).map(l => l.plant_batch_id))
     setEstibadores(r.estibadores ?? [])
     setEstibadorForm({ full_name: '', dni: '' })
     setError('')
@@ -283,6 +330,26 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
   async function handleSave() {
     setError('')
     if (!form.control_date) { setError('Seleccione la fecha.'); return }
+    if (allBatches.length > 0 && loteIds.length === 0) { setError('Marque al menos un lote que vaya en este camión.'); return }
+
+    const others = rows.filter(r => r.id !== editingId)
+    const grDup = guiaDuplicadaError(others, { grCaes: form.guia_remision.trim(), grTransp: form.guia_remision_transportista.trim() })
+    if (grDup) { setError(grDup); return }
+    // Solo un tramo final por despacho.
+    const finalDup = form.es_tramo_final && others.find(r => r.es_tramo_final)
+    if (finalDup) { setError(`Ya hay un tramo marcado como final (${new Date(`${finalDup.control_date}T00:00:00`).toLocaleDateString('es-PE')}, ${finalDup.lugar_partida ?? '—'} → ${finalDup.lugar_destino ?? '—'}). Desmárquelo primero.`); return }
+    // Un lote no va en dos camiones del mismo recorrido (sí puede seguir en
+    // el tramo siguiente, que tiene otro recorrido).
+    const sameRoute = others.filter(r =>
+      normRuta(r.lugar_partida) === normRuta(form.lugar_partida) && normRuta(r.lugar_destino) === normRuta(form.lugar_destino))
+    for (const r of sameRoute) {
+      const shared = (r.lotes ?? []).map(l => l.plant_batch_id).filter(id => loteIds.includes(id))
+      if (shared.length > 0) {
+        const b = allBatches.find(x => x.id === shared[0])
+        setError(`El lote ${b ? loteLabel(b) : ''} ya va en otro camión del mismo recorrido (GR ${r.guia_remision ?? 'sin guía'}). Desmárquelo en uno de los dos.`)
+        return
+      }
+    }
 
     setSaving(true)
     try {
@@ -291,6 +358,8 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
         lugar_partida: form.lugar_partida.trim() || null,
         lugar_destino: form.lugar_destino.trim() || null,
         guia_remision: form.guia_remision.trim() || null,
+        guia_remision_transportista: form.guia_remision_transportista.trim() || null,
+        es_tramo_final: !!form.es_tramo_final,
         transportista_razon_social: form.transportista_razon_social.trim() || null,
         transportista_constancia_mtc: form.transportista_constancia_mtc.trim() || null,
         chofer_nombre: form.chofer_nombre.trim() || null,
@@ -311,19 +380,27 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
       for (const item of VEHICULO_CHECK_ITEMS) payload[item.code] = form[item.code]
       for (const item of CARGA_CHECK_ITEMS) payload[item.code] = form[item.code]
 
+      const friendly = (e) => {
+        const msg = e?.message ?? ''
+        if (msg.includes('uq_ptucc_guia_remision')) return `La GR CAES ${form.guia_remision.trim()} ya está registrada en otro tramo.`
+        if (msg.includes('uq_ptucc_tramo_final')) return 'Ya hay otro tramo marcado como final en este despacho.'
+        return msg
+      }
+      let controlId = editingId
       if (editingId) {
         const { error: updErr } = await supabase
           .from('plant_transport_unit_controls_caes')
           .update(payload)
           .eq('id', editingId)
-        if (updErr) throw new Error(updErr.message)
+        if (updErr) throw new Error(friendly(updErr))
       } else {
         const { data: newControl, error: insErr } = await supabase
           .from('plant_transport_unit_controls_caes')
           .insert({ cooperative_id: COOPERATIVE.id, container_id: container.id, created_by: webUser.id, ...payload })
           .select('id')
           .single()
-        if (insErr) throw new Error(insErr.message)
+        if (insErr) throw new Error(friendly(insErr))
+        controlId = newControl.id
         if (estibadores.length > 0) {
           const { error: estErr } = await supabase
             .from('plant_transport_unit_control_estibadores_caes')
@@ -332,6 +409,20 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
         }
       }
 
+      // Lotes de este camión: se reemplaza la lista completa.
+      const { error: delLotesErr } = await supabase
+        .from('plant_transport_unit_control_lotes_caes')
+        .delete()
+        .eq('control_id', controlId)
+      if (delLotesErr) throw new Error(delLotesErr.message)
+      if (loteIds.length > 0) {
+        const { error: lotesErr } = await supabase
+          .from('plant_transport_unit_control_lotes_caes')
+          .insert(loteIds.map(id => ({ control_id: controlId, plant_batch_id: id })))
+        if (lotesErr) throw new Error(lotesErr.message)
+      }
+
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -358,6 +449,7 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
         .delete()
         .eq('id', r.id)
       if (delErr) throw new Error(delErr.message)
+      toast.success('Registro eliminado')
       await loadHistory()
     } catch (err) {
       setError(err.message ?? 'Error al eliminar el registro')
@@ -397,6 +489,8 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
 
               {loadingHistory ? (
                 <SkeletonList count={2} lines={2} />
+              ) : historyError ? (
+                <ErrorState onRetry={loadHistory} />
               ) : rows.length === 0 ? (
                 <EmptyState message="No hay controles de unidad de transporte para este contenedor aún." />
               ) : (
@@ -415,10 +509,15 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
                           <button className="btn small danger" style={{ padding: '2px 8px' }} disabled={saving} onClick={() => handleDelete(r)}>Eliminar</button>
                         </div>
                       </div>
-                      <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
-                        {r.guia_remision && `Guía: ${r.guia_remision} · `}
-                        {r.vehiculo_placa && `Placa: ${r.vehiculo_placa} · `}
-                        {r.registered_by && `Registrado por: ${r.registered_by.first_name} ${r.registered_by.last_name}`}
+                      <div className="meta" style={{ marginTop: 6, fontSize: 12, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                        <span>GR CAES: {r.guia_remision ? <strong>{r.guia_remision}</strong> : <span style={{ color: 'var(--warning-text)' }}>sin registrar</span>}</span>
+                        <InlineGrTransportista row={r} others={rows.filter(x => x.id !== r.id)} onSaved={loadHistory} />
+                        {r.es_tramo_final && <span className="tag ok">Tramo final</span>}
+                        {allBatches.length > 1 && (
+                          <span className="muted">Lotes: {(r.lotes ?? []).map(l => allBatches.find(b => b.id === l.plant_batch_id)).filter(Boolean).map(loteLabel).join(', ') || '—'}</span>
+                        )}
+                        {r.vehiculo_placa && <span>Placa: {r.vehiculo_placa}</span>}
+                        <AuditStamp row={r} />
                       </div>
                     </div>
                   ))}
@@ -436,8 +535,12 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
                   <input type="date" value={form.control_date} onChange={e => setForm({ ...form, control_date: e.target.value })} />
                 </div>
                 <div className="field" style={{ margin: 0 }}>
-                  <label>N° de guía de remisión</label>
+                  <label>GR CAES (remitente)</label>
                   <input type="text" value={form.guia_remision} onChange={e => setForm({ ...form, guia_remision: e.target.value })} />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>GR transportista (opcional)</label>
+                  <input type="text" value={form.guia_remision_transportista} onChange={e => setForm({ ...form, guia_remision_transportista: e.target.value })} placeholder="Se puede completar después" />
                 </div>
               </div>
               <div className="grid" style={{ gap: 8 }}>
@@ -450,12 +553,37 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
                   <input type="text" value={form.lugar_destino} onChange={e => setForm({ ...form, lugar_destino: e.target.value })} placeholder="Dirección completa" />
                 </div>
               </div>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, margin: '8px 0 4px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!form.es_tramo_final} onChange={e => setForm({ ...form, es_tramo_final: e.target.checked })} style={{ width: 'auto', margin: 0 }} />
+                Tramo final (llega al destino)
+              </label>
+
+              {allBatches.length > 0 && (
+                <div className="field" style={{ marginTop: 4 }}>
+                  <label>Lotes que van en este camión</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                    {allBatches.map(b => (
+                      <label key={b.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={loteIds.includes(b.id)} onChange={() => toggleLote(b.id)} style={{ width: 'auto', margin: 0 }} />
+                        {loteLabel(b)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <h4 style={{ margin: '12px 0 4px' }}>Datos del Transportista</h4>
               <div className="grid" style={{ gap: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
                   <label>Razón social del transportista</label>
-                  <input type="text" value={form.transportista_razon_social} onChange={e => setForm({ ...form, transportista_razon_social: e.target.value })} />
+                  <SelectOrOther
+                    key={`emp-${editingId ?? 'new'}`}
+                    options={companyOptions}
+                    value={form.transportista_razon_social}
+                    otherLabel="Otra empresa (escribir)"
+                    onChange={v => setForm(f => ({ ...f, transportista_razon_social: v }))}
+                    onSelectOption={o => o?.company?.constancia_mtc && setForm(f => ({ ...f, transportista_constancia_mtc: o.company.constancia_mtc }))}
+                  />
                 </div>
                 <div className="field" style={{ margin: 0 }}>
                   <label>N° constancia de inscripción (MTC)</label>
@@ -561,7 +689,13 @@ export default function TransportUnitControlsCaesModal({ container, orders, webU
               <div className="grid" style={{ gap: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
                   <label>Nombre y apellidos</label>
-                  <input type="text" value={estibadorForm.full_name} onChange={e => setEstibadorForm({ ...estibadorForm, full_name: e.target.value })} />
+                  <SelectOrOther
+                    key={`est-${estibadores.length}`}
+                    options={personnelOptions}
+                    value={estibadorForm.full_name}
+                    otherLabel="Otra persona (escribir)"
+                    onChange={v => setEstibadorForm(f => ({ ...f, full_name: v }))}
+                  />
                 </div>
                 <div className="field" style={{ margin: 0 }}>
                   <label>DNI</label>

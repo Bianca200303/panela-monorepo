@@ -1,13 +1,11 @@
-import { PRINT_STYLES, fmtDate, buildFirmasHTML, escapeHtml } from './shared'
+import { escapeHtml, fmtDate } from './shared'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FCCLR  = 'FCCLR'
 export const FORMAT_TITLE_FCCLR = 'FORMATO DE CONTROL DE CLORO LIBRE RESIDUAL'
 
-export function buildPrintHTMLFcclr(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, records, firmantes) {
-  const emisionDate = emittedAt
-    ? new Date(emittedAt).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' })
-    : '___/___/______'
-  const firmasHTML = buildFirmasHTML(firmantes ?? [])
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFcclrBodyHTML(records) {
 
   const SAFE_MIN = 0.5
   const SAFE_MAX = 2.0
@@ -56,27 +54,7 @@ export function buildPrintHTMLFcclr(cooperative, formatCode, moduleName, dateFro
       </tr>
     </tfoot>` : ''
 
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <title>${formatCode ?? FORMAT_TYPE_FCCLR}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px">${cooperative?.name ?? ''}</div>
-      <div style="font-size:14px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FCCLR}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-    </div>
-  </div>
-
+  return `
   <div style="margin-top:10px;overflow-x:auto">
     <table class="formato-table">
       <thead>
@@ -96,9 +74,34 @@ export function buildPrintHTMLFcclr(cooperative, formatCode, moduleName, dateFro
     <span><strong>Total mediciones:</strong> ${records.length}</span>
     <span><strong>Rango seguro:</strong> ${SAFE_MIN}–${SAFE_MAX} ppm</span>
     <span><strong>Cumplimiento:</strong> <strong style="color:${Number(pctCumple) >= 90 ? '#166534' : '#b45309'}">${pctCumple}%</strong></span>
-  </div>
+  </div>`
+}
 
-  <div class="formato-firmas">${firmasHTML}</div>
-</body>
-</html>`
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, las mediciones de los días exactos de producción de los lotes
+// de campo de la orden (ver fetchCampoModuloRecords en campoOrden.js).
+export function fetchFcclrOrdenData(cooperative, order) {
+  return fetchCampoModuloRecords(cooperative, order, {
+    table: 'chlorine_residual_controls',
+    select: 'id, control_date, control_time, measurement_point_1, measurement_point_2, corrective_actions, observations, responsible_person',
+    dateCol: 'control_date',
+    mode: 'dia',
+    orderBy: ['control_time'],
+  })
+}
+
+export function fcclrOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fcclr', title: FORMAT_TITLE_FCCLR, certNames: data.certNames, firmantes,
+    body: campoModulosBodyHTML(data, m => buildFcclrBodyHTML(m.records), 'Sin mediciones de cloro en las fechas de producción.'),
+  })
+}
+
+export function fcclrOrdenExcel(cooperative, order, containerNumber, data) {
+  const rows = [...campoExcelHeader(order, data.certNames, FORMAT_TITLE_FCCLR),
+    ['Módulo', 'Fecha', 'Hora', 'M1 — Sanitización (ppm)', 'M2 — Proceso/Tamizado (ppm)', 'Acciones correctivas', 'Observaciones', 'Responsable']]
+  for (const m of data.modulos) for (const r of m.records) {
+    rows.push([m.name, r.control_date, r.control_time?.slice(0, 5) ?? '', r.measurement_point_1 ?? '', r.measurement_point_2 ?? '', r.corrective_actions ?? '', r.observations ?? '', r.responsible_person ?? ''])
+  }
+  writeCampoExcel('fcclr', order, containerNumber, [['Cloro libre residual', rows]])
 }

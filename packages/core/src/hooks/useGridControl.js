@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
 import { useAuthStore } from '../store/authStore'
+import { toast } from '../lib/toast'
 
 // Motor genérico para los "controles de planta" con forma grilla (área/ítem
 // × fecha o área/ítem × día del mes): Limpieza de Ambientes, Limpieza de
@@ -53,13 +54,16 @@ export function useGridControl({
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [historyError, setHistoryError] = useState('')
 
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
     let query = supabase.from(table).select(historySelect).eq('cooperative_id', COOPERATIVE.id)
     for (const { column, ascending } of historyOrder) query = query.order(column, { ascending })
-    const { data } = await query.limit(50)
-    setControls(data ?? [])
+    const { data, error: loadErr } = await query.limit(50)
+    // Sin esto, un historial que no cargó se veía igual que uno vacío.
+    setHistoryError(loadErr ? loadErr.message : '')
+    if (!loadErr) setControls(data ?? [])
     setLoadingHistory(false)
   }, [])
 
@@ -78,10 +82,14 @@ export function useGridControl({
     setEditingId(control.id)
     setHeader(prev => ({ ...prev, ...control }))
 
-    const { data: rows } = await supabase
+    const { data: rows, error: rowsErr } = await supabase
       .from(childTable)
       .select(childSelect)
       .eq(childFk, control.id)
+    if (rowsErr) {
+      toast.error('No se pudo abrir el control', rowsErr.message)
+      return
+    }
     setChecks(checksFromRows(rows ?? [], control))
     setError('')
     setView('form')
@@ -134,6 +142,7 @@ export function useGridControl({
       }
 
       setView('history')
+      toast.success(editingId ? 'Cambios guardados' : 'Control registrado')
       await loadHistory()
     } catch (err) {
       setError(err.message ?? 'Error al guardar el control')
@@ -177,7 +186,7 @@ export function useGridControl({
 
   return {
     view, setView,
-    controls, loadingHistory,
+    controls, loadingHistory, historyError,
     editingId, header, updateHeader, updateIdentity,
     checks, cellValue, setCellValue,
     saving, error,

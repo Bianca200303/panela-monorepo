@@ -1,9 +1,11 @@
+import { toast } from '../lib/toast'
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useCooperative } from '../lib/cooperativeContext'
 import { loadCalidadEnvasadoOptions } from '../lib/formConfig'
 import { loteLabel, packagingLabel, formatDate, pctToMgkg, mgkgToPct } from '../lib/loteHelpers'
 import { getCoopCode } from '../lib/formatos/shared'
+import { useActiveCatalog, catalogLabel } from '../hooks/useActiveCatalog'
 
 // Control de calidad del producto ya envasado: 1 registro por lote, editable
 // (se puede volver a guardar si hubo que corregir algo). A diferencia del
@@ -44,6 +46,10 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
   const [options, setOptions] = useState({ color: [], sabor: [], textura: [] })
 
   useEffect(() => { if (!isLiberacion) loadCalidadEnvasadoOptions(COOPERATIVE).then(setOptions) }, [])
+
+  // "Muestreado por": se elige del personal de planta ya registrado
+  // (plant_personnel, el mismo de Higiene; se gestiona en Catálogos).
+  const personnelNames = useActiveCatalog('personal').map(p => catalogLabel('personal', p))
 
   function updateImpurezas(unit, value) {
     setForm(f => unit === 'pct'
@@ -100,6 +106,7 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
         .update(payload)
         .eq('id', plantBatch.id)
       if (updErr) throw new Error(updErr.message)
+      toast.success('Control de calidad guardado')
       onSaved?.()
       onClose()
     } catch (err) {
@@ -115,7 +122,7 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
         <div className="modal-body">
           <h3 style={{ margin: '0 0 4px' }}>{isLiberacion ? 'Liberación de producto terminado' : 'Control de calidad'}: {loteLabel(plantBatch)}</h3>
           <p className="small" style={{ margin: '0 0 16px', color: '#000' }}>
-            {plantBatch.brand} · {packagingLabel(plantBatch)}
+            {plantBatch.brand ? `${plantBatch.brand} · ` : ''}{packagingLabel(plantBatch)}
           </p>
 
           {isLiberacion && (plantBatch.envasado_registered_at || plantBatch.liberacion_formato_codigo) && (
@@ -130,13 +137,13 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
             <div className="field" style={{ margin: 0 }}>
               <label>Humedad (%)</label>
               <input type="number" min="0" max="100" step="0.01" value={form.calidad_humedad_pct}
-                style={{ borderColor: form.calidad_humedad_pct === '' || humedadOk ? undefined : '#dc2626' }}
+                style={{ borderColor: form.calidad_humedad_pct === '' || humedadOk ? undefined : 'var(--danger)' }}
                 onChange={e => setForm({ ...form, calidad_humedad_pct: e.target.value })} />
             </div>
             <div className="field" style={{ margin: 0 }}>
               <label>Impurezas (%)</label>
               <input type="number" min="0" step="0.0001" value={form.calidad_impurezas_pct}
-                style={{ borderColor: form.calidad_impurezas_pct === '' || impurezasOk ? undefined : '#dc2626' }}
+                style={{ borderColor: form.calidad_impurezas_pct === '' || impurezasOk ? undefined : 'var(--danger)' }}
                 onChange={e => updateImpurezas('pct', e.target.value)} />
             </div>
             <div className="field" style={{ margin: 0 }}>
@@ -164,8 +171,15 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
               <div className="grid" style={{ gap: 8 }}>
                 <div className="field" style={{ margin: 0 }}>
                   <label>Muestreado por</label>
-                  <input type="text" value={form.liberacion_muestreado_por}
-                    onChange={e => setForm({ ...form, liberacion_muestreado_por: e.target.value })} />
+                  <select value={form.liberacion_muestreado_por}
+                    onChange={e => setForm({ ...form, liberacion_muestreado_por: e.target.value })}>
+                    <option value="">Seleccione...</option>
+                    {personnelNames.map(n => <option key={n} value={n}>{n}</option>)}
+                    {/* Valor guardado antes que ya no está en la lista (texto libre viejo o persona desactivada). */}
+                    {form.liberacion_muestreado_por && !personnelNames.includes(form.liberacion_muestreado_por) && (
+                      <option value={form.liberacion_muestreado_por}>{form.liberacion_muestreado_por}</option>
+                    )}
+                  </select>
                 </div>
                 <div className="field" style={{ margin: 0 }}>
                   <label>Resultado</label>
@@ -218,7 +232,7 @@ export default function CalidadEnvasadoModal({ plantBatch, webUser, onClose, onS
             </p>
           )}
 
-          {error && <p style={{ color: '#dc2626', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
         </div>
         <div className="modal-actions">
           <button className="btn small" onClick={onClose} disabled={saving}>Cancelar</button>

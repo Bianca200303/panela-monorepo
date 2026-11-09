@@ -64,6 +64,10 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
   const nominalGr = plantBatch.packaging_kg ? Number(plantBatch.packaging_kg) * 1000 : null
 
   const [turno, setTurno] = useState('manana')
+  // Fecha real del control: por defecto hoy, pero se puede elegir un día
+  // anterior para registrarlo después (antes siempre quedaba con la fecha
+  // del día en que se cargaba). Cada (fecha, turno) es un formulario aparte.
+  const [controlDate, setControlDate] = useState(todayStr())
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState(null)
   const [checks, setChecks] = useState([]) // [{ ...check, samples: [...] }]
@@ -85,7 +89,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
   const [closing, setClosing] = useState(false)
   const [reopening, setReopening] = useState(false)
 
-  useEffect(() => { load() }, [turno])
+  useEffect(() => { load() }, [turno, controlDate])
 
   async function load() {
     setLoading(true)
@@ -94,7 +98,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
       .from('plant_batch_weight_seal_forms')
       .select('*')
       .eq('plant_batch_id', plantBatch.id)
-      .eq('control_date', todayStr())
+      .eq('control_date', controlDate)
       .eq('turno', turno)
       .maybeSingle()
 
@@ -129,7 +133,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
         .insert({
           cooperative_id: COOPERATIVE.id,
           plant_batch_id: plantBatch.id,
-          control_date: todayStr(),
+          control_date: controlDate,
           turno,
           responsible_person: responsiblePerson.trim(),
           created_by: webUser.id,
@@ -301,14 +305,20 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
         <div className="modal-body">
           <h3 style={{ margin: '0 0 4px' }}>Control de Pesos y Sellado</h3>
           <p className="muted small" style={{ margin: '0 0 12px' }}>
-            {loteLabel(plantBatch)} · {plantBatch.brand} · {todayStr().split('-').reverse().join('/')}
+            {loteLabel(plantBatch)} · {plantBatch.brand}
             {nominalGr != null && ` · Peso nominal: ${nominalGr}g (+1g)`}
           </p>
 
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {Object.entries(TURNOS).map(([v, lbl]) => (
-              <button key={v} className={`btn small ${turno === v ? 'primary' : 'outline'}`} onClick={() => setTurno(v)}>{lbl}</button>
-            ))}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 14 }}>
+            <div className="field" style={{ margin: 0 }}>
+              <label>Fecha del control</label>
+              <input type="date" value={controlDate} max={todayStr()} onChange={e => e.target.value && setControlDate(e.target.value)} />
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {Object.entries(TURNOS).map(([v, lbl]) => (
+                <button key={v} className={`btn small ${turno === v ? 'primary' : 'outline'}`} onClick={() => setTurno(v)}>{lbl}</button>
+              ))}
+            </div>
           </div>
 
           {loading ? (
@@ -319,7 +329,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                 <label>Responsable</label>
                 <input type="text" value={responsiblePerson} onChange={e => setResponsiblePerson(e.target.value)} placeholder="Nombre de quien completa el formulario" />
               </div>
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           ) : (
             <>
@@ -349,11 +359,11 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                             <tr>
                               <td>{c.hora_label}</td>
                               <td>{c.samples.length}</td>
-                              <td style={{ color: belowNominal ? '#dc2626' : undefined, fontWeight: belowNominal ? 700 : undefined }}>
+                              <td style={{ color: belowNominal ? 'var(--danger)' : undefined, fontWeight: belowNominal ? 700 : undefined }}>
                                 {pesos.length > 0 ? `${Math.min(...pesos)} - ${Math.max(...pesos)}` : '—'}
                               </td>
-                              <td style={{ color: badSellado > 0 ? '#dc2626' : undefined }}>{badSellado}</td>
-                              <td style={{ color: badLimpieza > 0 ? '#dc2626' : undefined }}>{badLimpieza}</td>
+                              <td style={{ color: badSellado > 0 ? 'var(--danger)' : undefined }}>{badSellado}</td>
+                              <td style={{ color: badLimpieza > 0 ? 'var(--danger)' : undefined }}>{badLimpieza}</td>
                               {isOpen && (
                                 <td>
                                   <div style={{ display: 'flex', gap: 4 }}>
@@ -367,7 +377,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                             </tr>
                             {editingCheckId === c.id && (
                               <tr>
-                                <td colSpan={isOpen ? 6 : 5} style={{ background: '#f9fafb', padding: '10px 12px' }}>
+                                <td colSpan={isOpen ? 6 : 5} style={{ background: 'var(--surface-subtle)', padding: '10px 12px' }}>
                                   <div className="field" style={{ margin: '0 0 10px', maxWidth: 160 }}>
                                     <label>Hora</label>
                                     <select value={editHoraLabel} onChange={e => setEditHoraLabel(e.target.value)}>
@@ -390,7 +400,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                                                 <input
                                                   type="number" step="0.1" min="0" value={s.pesoGr}
                                                   onChange={e => updateEditSample(s.muestra_number, 'pesoGr', e.target.value)}
-                                                  style={{ width: 80, fontSize: 12, color: isLow ? '#dc2626' : undefined, fontWeight: isLow ? 700 : undefined }}
+                                                  style={{ width: 80, fontSize: 12, color: isLow ? 'var(--danger)' : undefined, fontWeight: isLow ? 700 : undefined }}
                                                 />
                                               </td>
                                               <td>
@@ -452,7 +462,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                                 <input
                                   type="number" step="0.1" min="0" value={s.pesoGr}
                                   onChange={e => updateSample(s.muestra_number, 'pesoGr', e.target.value)}
-                                  style={{ width: 80, fontSize: 12, color: isLow ? '#dc2626' : undefined, fontWeight: isLow ? 700 : undefined }}
+                                  style={{ width: 80, fontSize: 12, color: isLow ? 'var(--danger)' : undefined, fontWeight: isLow ? 700 : undefined }}
                                 />
                               </td>
                               <td>
@@ -488,7 +498,7 @@ export default function WeightSealControlModal({ plantBatch, webUser, onClose })
                 />
               </div>
 
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           )}
         </div>

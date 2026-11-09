@@ -48,7 +48,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
   const { confirm, dialog: confirmDialog } = useConfirm()
 
   const [loading, setLoading] = useState(true)
-  const [form, setForm] = useState(null) // fila de plant_batch_foreign_object_forms, o null si no existe hoy
+  const [form, setForm] = useState(null) // fila de plant_batch_foreign_object_forms, o null si no existe para la fecha elegida
   const [checks, setChecks] = useState([])
   const [siblings, setSiblings] = useState([])
   const [error, setError] = useState('')
@@ -67,11 +67,15 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
   const [editCheckForm, setEditCheckForm] = useState({ check_time: '', check_type: 'prueba', bags_separated: '0', test_type: 'F', conforme: true })
   const [savingEditCheck, setSavingEditCheck] = useState(false)
 
+  // Fecha real del control: por defecto hoy, se puede elegir un día anterior
+  // para registrarlo después. Cada fecha es un formulario aparte.
+  const [controlDate, setControlDate] = useState(todayStr())
+
   const [finalObservations, setFinalObservations] = useState('')
   const [closing, setClosing] = useState(false)
   const [reopening, setReopening] = useState(false)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [controlDate])
 
   async function load() {
     setLoading(true)
@@ -80,7 +84,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
       .from('plant_batch_foreign_object_forms')
       .select('*')
       .eq('plant_batch_id', plantBatch.id)
-      .eq('control_date', todayStr())
+      .eq('control_date', controlDate)
       .maybeSingle()
 
     if (existingForm) {
@@ -92,6 +96,10 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
         .order('inspection_number', { ascending: true })
       setChecks(checksData ?? [])
       setFinalObservations(existingForm.final_observations ?? '')
+    } else {
+      setForm(null)
+      setChecks([])
+      setFinalObservations('')
     }
 
     // Lotes hermanos de la misma orden -- para ver de un vistazo si ya
@@ -107,7 +115,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
           .from('plant_batch_foreign_object_forms')
           .select('plant_batch_id, status')
           .in('plant_batch_id', otherBatches.map(b => b.id))
-          .eq('control_date', todayStr())
+          .eq('control_date', controlDate)
         const statusByBatch = {}
         ;(siblingForms ?? []).forEach(f => { statusByBatch[f.plant_batch_id] = f.status })
         setSiblings(otherBatches.map(b => ({ ...b, status: statusByBatch[b.id] ?? null })))
@@ -125,7 +133,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
         .insert({
           cooperative_id: COOPERATIVE.id,
           plant_batch_id: plantBatch.id,
-          control_date: todayStr(),
+          control_date: controlDate,
           responsible_person: responsiblePerson.trim(),
         })
         .select('*')
@@ -289,9 +297,15 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
       <div className="modal-content" style={{ maxWidth: 640 }}>
         <div className="modal-body">
           <h3 style={{ margin: '0 0 4px' }}>Control de objetos extraños</h3>
-          <p className="muted small" style={{ margin: '0 0 16px' }}>
-            {loteLabel(plantBatch)} · {plantBatch.brand} · {todayStr().split('-').reverse().join('/')}
+          <p className="muted small" style={{ margin: '0 0 12px' }}>
+            {loteLabel(plantBatch)} · {plantBatch.brand}
           </p>
+          <div style={{ marginBottom: 14, maxWidth: 200 }}>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Fecha del control</label>
+                <input type="date" value={controlDate} max={todayStr()} onChange={e => e.target.value && setControlDate(e.target.value)} />
+              </div>
+          </div>
 
           {loading ? (
             <SkeletonList count={2} lines={1} />
@@ -301,7 +315,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
                 <label>Responsable</label>
                 <input type="text" value={responsiblePerson} onChange={e => setResponsiblePerson(e.target.value)} placeholder="Nombre de quien completa el formulario" />
               </div>
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           ) : (
             <>
@@ -312,8 +326,8 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
               </div>
 
               {siblings.length > 0 && (
-                <div style={{ marginBottom: 12, padding: '8px 10px', background: '#f9fafb', border: '1px solid var(--border)', borderRadius: 8 }}>
-                  <div className="muted small" style={{ marginBottom: 4 }}>Otros {LOTE_LABEL_PLURAL_LOWER} de esta misma orden hoy:</div>
+                <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--surface-subtle)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div className="muted small" style={{ marginBottom: 4 }}>Otros {LOTE_LABEL_PLURAL_LOWER} de esta misma orden en esta fecha:</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {siblings.map(s => (
                       <span key={s.id} className={`tag ${s.status === 'terminado' ? 'ok' : s.status === 'en_progreso' ? 'info' : ''}`} style={{ fontSize: 11 }}>
@@ -393,7 +407,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
                           <td>{c.check_type === 'prueba' ? TEST_TYPE_LABELS[c.test_type] : <span className="muted small">—</span>}</td>
                           <td>
                             {c.check_type === 'prueba' ? (
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: c.conforme ? 'var(--success)' : '#dc2626' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: c.conforme ? 'var(--success)' : 'var(--danger)' }}>
                                 <Icon name={c.conforme ? 'check' : 'x'} size={13} />
                                 {c.conforme ? 'Conforme' : 'No conforme'}
                               </span>
@@ -477,7 +491,7 @@ export default function ForeignObjectControlModal({ plantBatch, webUser, onClose
                 />
               </div>
 
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </>
           )}
         </div>

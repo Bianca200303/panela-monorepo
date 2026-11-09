@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import JSZip from 'jszip'
 import { quickDocFileName, docFileId, quickDocLabel } from '../lib/formatos/shared'
 import { generatePdfBlob, downloadBlob, downloadPdfDocument } from '../lib/pdfDownload'
+import { trackAction } from '../lib/usage'
 import { useCooperative } from '../lib/cooperativeContext'
 import { loteLabel, isOrderNacional } from '../lib/loteHelpers'
 import { getLoteLabel, getLoteLabelPluralLower } from '../lib/labels'
@@ -12,18 +13,23 @@ import { getLoteLabel, getLoteLabelPluralLower } from '../lib/labels'
 // más "logistica" para los documentos que no son ni control de proceso ni
 // de higiene (Orden de Salida, Packing List, Resumen de Trazabilidad).
 const CATEGORY_LABELS = {
-  bpm:       'Buenas Prácticas de Manufactura',
-  hys:       'Higiene y Saneamiento',
-  logistica: 'Logística y Trazabilidad',
+  bpm:          'Buenas Prácticas de Manufactura',
+  hys:          'Higiene y Saneamiento',
+  logistica:    'Logística y Trazabilidad',
+  trazabilidad: 'Trazabilidad',
+  calidad:      'Calidad / Cliente',
 }
-const CATEGORY_ORDER = ['bpm', 'hys', 'logistica']
+// Pestaña Campo (fieldDocs): mismas categorías que tenía Reportes ->
+// Formatos de Campo, más "trazabilidad" para Origen de la Materia Prima.
+const CATEGORY_ORDER = {
+  planta: ['bpm', 'hys', 'logistica'],
+  campo:  ['trazabilidad', 'bpm', 'hys', 'calidad'],
+}
 
-// Documentos rápidos por orden -- no son "formatos" oficiales (esos viven en
-// la sección Formatos, con código correlativo propio). Se arman al vuelo con
-// datos que ya existen en el sistema, para bajar directo desde la card de la
-// orden sin tener que ir a buscarlos a otro lado. Hoy hay 1 (Registro de
-// Trazabilidad); la lista crece agregando entradas a QUICK_DOCS, sin tocar
-// este modal.
+// Documentos por orden (planta y campo), sin código correlativo: se arman al
+// vuelo con datos que ya existen en el sistema, para bajar directo desde la
+// card de la orden. La lista crece agregando entradas a QUICK_DOCS (planta,
+// por cooperativa) o a FIELD_DOCS (campo, compartida), sin tocar este modal.
 //
 // initialDocKey/initialBatch: entrada directa a un documento puntual sin
 // pasar por la lista (ej. el botón "Resumen de trazabilidad" de cada lote en
@@ -31,11 +37,16 @@ const CATEGORY_ORDER = ['bpm', 'hys', 'logistica']
 // quickDocs: lista QUICK_DOCS de la app que llama (ya no un import fijo --
 // cada cooperativa tiene su propia lista, ver lib/formatos/index.js de
 // apps/caes y apps/norandino).
-export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, initialDocKey, initialBatch, onClose, quickDocs }) {
+//
+// fieldDocs: documentos de CAMPO por orden (FIELD_DOCS, ver
+// lib/formatos/fieldDocs.js) -- se muestran en la pestaña "Campo" y
+// funcionan igual que los de planta; "Descargar todos" incluye ambas.
+export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, initialDocKey, initialBatch, onClose, quickDocs, fieldDocs = [] }) {
   const COOPERATIVE = useCooperative()
   const LOTE_LABEL = getLoteLabel(COOPERATIVE, order)
   const LOTE_LABEL_PLURAL_LOWER = getLoteLabelPluralLower(COOPERATIVE, order)
-  const QUICK_DOCS = quickDocs
+  const QUICK_DOCS = [...quickDocs, ...fieldDocs]
+  const [tab, setTab] = useState('planta')
   const [docKey, setDocKey] = useState(null)
   const [docData, setDocData] = useState(null)
   const [firmantes, setFirmantes] = useState([])
@@ -72,6 +83,9 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
     if (d.key === 'packing_list_nacional_caes') return isOrderNacional(COOPERATIVE, order)
     return true
   })
+  const tabDocs = tab === 'campo'
+    ? fieldDocs
+    : applicableDocs.filter(d => !fieldDocs.includes(d))
 
   const loadDoc = async (key, batch, tipo) => {
     setError('')
@@ -86,6 +100,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
       const d = QUICK_DOCS.find(x => x.key === key)
       const data = await d.fetchData(order, kgPerQuintal, batch, tipo)
       setDocData(data)
+      trackAction('ver_documento', key)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -136,6 +151,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
     try {
       const html = doc.buildPdfHtml(order, containerNumber, docData, firmantes)
       await downloadPdfDocument(html)
+      trackAction('descargar_documento', `${docKey} pdf`)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -145,6 +161,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
 
   const handleExcel = () => {
     doc.buildExcel(order, containerNumber, docData)
+    trackAction('descargar_documento', `${docKey} excel`)
   }
 
   // Arma un .zip con los 12 documentos como PDFs reales, cada uno como su
@@ -177,6 +194,7 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
     if (Object.keys(zip.files).length > 0) {
       const zipBlob = await zip.generateAsync({ type: 'blob' })
       downloadBlob(zipBlob, `Documentos - ${docFileId(order, containerNumber)}.zip`)
+      trackAction('descargar_documentos_zip')
     }
     setBulkDownloading(false)
     setBulkProgress(null)
@@ -191,13 +209,19 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
     <div className="modal-overlay">
       <div className="modal-content">
         <div className="modal-body">
-          <h3 style={{ margin: '0 0 4px' }}>Documentos de planta de envasado</h3>
+          <h3 style={{ margin: '0 0 4px' }}>Documentos</h3>
           <p className="muted small" style={{ margin: '0 0 16px' }}>
             Orden {order?.client_order_number ?? order?.order_code}
           </p>
 
           {!doc && (
             <>
+              {fieldDocs.length > 0 && (
+                <div className="segmented" style={{ marginBottom: 12 }}>
+                  <button className={tab === 'planta' ? 'active' : ''} onClick={() => setTab('planta')} disabled={bulkDownloading}>Planta</button>
+                  <button className={tab === 'campo' ? 'active' : ''} onClick={() => setTab('campo')} disabled={bulkDownloading}>Campo</button>
+                </div>
+              )}
               <button
                 className="btn primary"
                 style={{ width: '100%', marginBottom: 10 }}
@@ -209,8 +233,8 @@ export default function QuickDocsModal({ order, containerNumber, kgPerQuintal, i
                   : 'Descargar todos (.zip)'}
               </button>
               {bulkResult && <p className="muted small" style={{ margin: '0 0 10px' }}>{bulkResult}</p>}
-              {CATEGORY_ORDER.map(cat => {
-                const docsInCat = applicableDocs.filter(d => d.category === cat)
+              {CATEGORY_ORDER[tab].map(cat => {
+                const docsInCat = tabDocs.filter(d => d.category === cat)
                 if (docsInCat.length === 0) return null
                 return (
                   <div key={cat} style={{ marginBottom: 10 }}>

@@ -1,6 +1,7 @@
-import { PRINT_STYLES, fmtDate, fmtDateTime, buildFirmasHTML, escapeHtml } from './shared'
+import { supabase } from '../supabase'
+import { escapeHtml, fmtDate } from './shared'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FIAE  = 'FIAE'
 export const FORMAT_TITLE_FIAE = 'FORMATO DE INSPECCIÓN DE AMBIENTES, EQUIPO Y PERSONAL'
 
 const FIAE_AREA_ORDER = [
@@ -18,9 +19,9 @@ const FIAE_AREA_LABELS = {
   reservoir:           'Reservorio',
 }
 
-export function buildPrintHTMLFiae(cooperative, formatCode, moduleName, inspectionDate, emittedAt, items, firmantes) {
-  const firmasHTML  = buildFirmasHTML(firmantes)
-  const emisionDate = emittedAt ? fmtDateTime(emittedAt) : '—'
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFiaeBodyHTML(items) {
 
   const byArea = {}
   ;(items ?? []).forEach(it => {
@@ -64,30 +65,57 @@ export function buildPrintHTMLFiae(cooperative, formatCode, moduleName, inspecti
       </div>`
     }).join('')
 
-  return `<!DOCTYPE html><html lang="es">
-<head><meta charset="UTF-8"><title>${FORMAT_TITLE_FIAE}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase">${cooperative?.name ?? ''}</div>
-      <div style="font-size:14px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FIAE}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Fecha de inspección:</span> ${fmtDate(inspectionDate)}</div>
-    </div>
-  </div>
-  <div style="margin-top:10px">${areaSections}</div>
+  return `  <div style="margin-top:10px">${areaSections}</div>
   <div style="margin-top:8px;padding:6px 8px;background:#f0f0f0;border:1px solid #ccc;font-size:11px;display:flex;gap:32px">
     <span><strong>Total ítems:</strong> ${totalItems}</span>
     <span><strong>Conformes:</strong> <span style="color:#166534;font-weight:700">${conformes}</span></span>
     <span><strong>No Conformes:</strong> <span style="color:#dc2626;font-weight:700">${noConformes}</span></span>
     <span><strong>Cumplimiento:</strong> <strong style="color:${pct >= 90 ? '#166534' : '#b45309'}">${pct}%</strong></span>
-  </div>
-  <div class="formato-firmas">${firmasHTML}</div>
-</body></html>`
+  </div>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, las inspecciones de los días exactos de producción (una
+// sub-sección por inspección, igual que el formato emitido de Reportes que
+// era de una sola inspección).
+export async function fetchFiaeOrdenData(cooperative, order) {
+  const data = await fetchCampoModuloRecords(cooperative, order, {
+    table: 'environment_inspections',
+    select: 'id, inspection_date',
+    dateCol: 'inspection_date',
+    mode: 'dia',
+  })
+  const ids = data.modulos.flatMap(m => m.records.map(r => r.id))
+  if (ids.length === 0) return data
+  const { data: items, error } = await supabase
+    .from('environment_inspection_items')
+    .select('environment_inspection_id, area_code, item_code, item_description, condition, corrective_actions, observations')
+    .in('environment_inspection_id', ids)
+  if (error) throw new Error(error.message)
+  return {
+    ...data,
+    modulos: data.modulos.map(m => ({
+      ...m,
+      records: m.records.map(r => ({ ...r, items: (items ?? []).filter(i => i.environment_inspection_id === r.id) })),
+    })),
+  }
+}
+
+export function fiaeOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fiae', title: FORMAT_TITLE_FIAE, certNames: data.certNames, firmantes,
+    body: campoModulosBodyHTML(data, m => m.records.map(r => `
+      <div class="section-label" style="margin-top:8px">Inspección del ${fmtDate(r.inspection_date)}</div>
+      ${buildFiaeBodyHTML(r.items)}`).join(''), 'Sin inspecciones en las fechas de producción.'),
+  })
+}
+
+export function fiaeOrdenExcel(cooperative, order, containerNumber, data) {
+  const rows = [...campoExcelHeader(order, data.certNames, FORMAT_TITLE_FIAE),
+    ['Módulo', 'Fecha de inspección', 'Área', 'Ítem', 'Estado', 'Acciones correctivas', 'Observaciones']]
+  for (const m of data.modulos) for (const r of m.records) for (const it of r.items) {
+    rows.push([m.name, r.inspection_date, FIAE_AREA_LABELS[it.area_code] ?? it.area_code, it.item_description ?? it.item_code,
+      it.condition === 'compliant' ? 'Conforme' : 'No conforme', it.corrective_actions ?? '', it.observations ?? ''])
+  }
+  writeCampoExcel('fiae', order, containerNumber, [['Inspección de ambientes', rows]])
 }

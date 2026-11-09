@@ -1,4 +1,5 @@
 import Icon from './Icon'
+import ClearableInput from './ClearableInput'
 import DateInput from './DateInput'
 
 // Barra de búsqueda + filtros reutilizable -- usada en Recepción, Calidad y
@@ -20,11 +21,11 @@ export default function SearchFilterBar({
       <div className="search-input-wrap">
         <label>Buscar</label>
         <Icon name="search" size={15} className="search-icon" />
-        <input
-          type="text"
+        <ClearableInput
           placeholder={searchPlaceholder}
           value={search}
           onChange={e => onSearchChange(e.target.value)}
+          onClear={() => onSearchChange('')}
         />
       </div>
 

@@ -1,10 +1,12 @@
 import { useState, useEffect, Fragment } from 'react'
+import AuditStamp from '../components/AuditStamp'
 import { useCooperative } from '../lib/cooperativeContext'
 import { useGridControl } from '../hooks/useGridControl'
 import { loadCleaningVerificationAreas, getCleaningVerificationPersonalNote } from '../lib/formatos/verificacionLimpieza'
 import { getCoopCode } from '../lib/formatos/shared'
 import { SkeletonList } from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import PeriodExistsBanner from '../components/PeriodExistsBanner'
 
 // Mismo motor/tabla en ambas cooperativas, pero representa un papel físico
@@ -25,8 +27,8 @@ function todayISO() {
 }
 
 function cellStyle(status) {
-  if (status === 'correcto') return { color: '#166534', background: '#f0fdf4', borderColor: '#166534' }
-  if (status === 'no_correcto') return { color: '#991b1b', background: '#fef2f2', borderColor: '#991b1b' }
+  if (status === 'correcto') return { color: 'var(--success-text)', background: 'var(--success-bg)', borderColor: 'var(--success-text)' }
+  if (status === 'no_correcto') return { color: 'var(--danger-text)', background: 'var(--danger-bg-soft)', borderColor: 'var(--danger-text)' }
   return { color: '#999', background: '#fff' }
 }
 
@@ -67,7 +69,7 @@ export default function VerificacionLimpiezaPage() {
   useEffect(() => { loadCleaningVerificationAreas(COOPERATIVE).then(setAreas) }, [])
 
   const {
-    view, setView, controls, loadingHistory,
+    view, setView, controls, loadingHistory, historyError, reload: reloadHistory,
     editingId, header, updateHeader, updateIdentity,
     cellValue, setCellValue,
     saving, error,
@@ -75,7 +77,7 @@ export default function VerificacionLimpiezaPage() {
   } = useGridControl({
     table: 'plant_cleaning_verification_controls',
     childTable: 'plant_cleaning_verification_checks',
-    historySelect: 'id, control_date, responsible_person, observations, formato_codigo, plant_cleaning_verification_checks ( status ), registered_by:web_users!pcvc_created_by_fkey ( first_name, last_name )',
+    historySelect: 'id, control_date, responsible_person, observations, formato_codigo, plant_cleaning_verification_checks ( status ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pcvc_created_by_fkey ( first_name, last_name )',
     historyOrder: [{ column: 'control_date', ascending: false }],
     emptyHeader: () => ({ control_date: todayISO(), responsible_person: '', observations: '' }),
     validateHeader: h => !h.responsible_person?.trim() ? 'Ingrese el responsable.' : null,
@@ -149,6 +151,8 @@ export default function VerificacionLimpiezaPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={reloadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message={`No hay ${VL_PLURAL} registradas aún.`} />
         ) : (
@@ -169,7 +173,7 @@ export default function VerificacionLimpiezaPage() {
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {c.formato_codigo && <>Código de Control: <strong style={{ fontFamily: 'monospace' }}>{c.formato_codigo}</strong> · </>}
                     Responsable: {c.responsible_person ?? '—'}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                   {c.observations && <div className="meta" style={{ fontSize: 12 }}>Observaciones: {c.observations}</div>}
                 </div>
@@ -192,11 +196,6 @@ export default function VerificacionLimpiezaPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            La fecha identifica a este control ya guardado y no se puede cambiar aquí. Para otra fecha, vuelva al historial y use "Editar" o "+ Nueva {VL_NOMBRE}".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Fecha</label>
@@ -238,7 +237,7 @@ export default function VerificacionLimpiezaPage() {
               {areas.map(({ area, items }) => (
                 <Fragment key={area}>
                   <tr>
-                    <td colSpan={3} style={{ background: '#f3f4f6', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
+                    <td colSpan={3} style={{ background: 'var(--surface-sunken)', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
                   </tr>
                   {items.map(item => {
                     const value = cellValue(area, item.code)
@@ -279,7 +278,7 @@ export default function VerificacionLimpiezaPage() {
       </div>
       )}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

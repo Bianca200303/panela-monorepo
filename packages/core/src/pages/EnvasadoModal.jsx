@@ -1,3 +1,4 @@
+import { toast } from '../lib/toast'
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { loteKg, loteLabel, packagingLabel, loteBunques } from '../lib/loteHelpers'
@@ -125,6 +126,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
         .update(payload)
         .eq('id', plantBatch.id)
       if (updErr) throw new Error(updErr.message)
+      toast.success('Envasado guardado')
       onSaved?.()
       onClose()
     } catch (err) {
@@ -140,7 +142,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
         <div className="modal-body">
           <h3 style={{ margin: '0 0 4px' }}>Envasado: {loteLabel(plantBatch)}</h3>
           <p className="small" style={{ margin: '0 0 4px', color: '#000' }}>
-            {plantBatch.brand} · {packagingLabel(plantBatch)} · {plannedKg.toFixed(1)} kg planificados
+            {plantBatch.brand ? `${plantBatch.brand} · ` : ''}{packagingLabel(plantBatch)} · {plannedKg.toFixed(1)} kg planificados
           </p>
           {bunques.length > 0 && (
             <p className="small" style={{ margin: '0 0 4px', color: '#000' }}>
@@ -169,7 +171,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
             <div className="field" style={{ margin: 0 }}>
               <label>Panela envasada (QQ)</label>
               <input type="number" min="0" step="0.01" value={form.envasado_qq}
-                style={{ borderColor: form.envasado_qq === '' || qqOk ? undefined : '#dc2626' }}
+                style={{ borderColor: form.envasado_qq === '' || qqOk ? undefined : 'var(--danger)' }}
                 onChange={e => setForm({ ...form, envasado_qq: e.target.value })} />
             </div>
             <div className="field" style={{ margin: 0 }}>
@@ -179,7 +181,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
             </div>
           </div>
           {form.envasado_qq !== '' && (
-            <p className="muted small" style={{ margin: '4px 0 12px', color: qqOk ? 'var(--success)' : '#dc2626', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <p className="muted small" style={{ margin: '4px 0 12px', color: qqOk ? 'var(--success)' : 'var(--danger)', display: 'flex', alignItems: 'center', gap: 5 }}>
               {envasadoKgEquiv.toFixed(1)} kg equivalentes de {plannedKg.toFixed(1)} kg planificados
               {qqOk ? <Icon name="check" size={13} /> : ` — no coincide (diferencia ${qqDiffKg.toFixed(2)} kg)`}
             </p>
@@ -189,7 +191,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
             <div className="field" style={{ margin: 0 }}>
               <label>Cajas envasadas {plantBatch.boxes_count != null && `(plan: ${plantBatch.boxes_count})`}</label>
               <input type="number" min="0" step="1" value={form.envasado_cajas_envasadas}
-                style={{ borderColor: form.envasado_cajas_envasadas === '' || cajasOk ? undefined : '#dc2626' }}
+                style={{ borderColor: form.envasado_cajas_envasadas === '' || cajasOk ? undefined : 'var(--danger)' }}
                 onChange={e => setForm({ ...form, envasado_cajas_envasadas: e.target.value })} />
             </div>
             <div className="field" style={{ margin: 0 }}>
@@ -204,7 +206,7 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
               <div className="field">
                 <label>Bolsas envasadas {plantBatch.packaging_count != null && `(plan: ${plantBatch.packaging_count})`}</label>
                 <input type="number" min="0" step="1" value={form.envasado_bolsas_envasadas}
-                  style={{ borderColor: form.envasado_bolsas_envasadas === '' || empaqueOk ? undefined : '#dc2626' }}
+                  style={{ borderColor: form.envasado_bolsas_envasadas === '' || empaqueOk ? undefined : 'var(--danger)' }}
                   onChange={e => setForm({ ...form, envasado_bolsas_envasadas: e.target.value })} />
               </div>
               <div className="grid" style={{ gap: 8 }}>
@@ -240,12 +242,12 @@ export default function EnvasadoModal({ plantBatch, order, kgPerQuintal, webUser
             <div className="field">
               <label>Sacos envasados {plantBatch.packaging_count != null && `(plan: ${plantBatch.packaging_count})`}</label>
               <input type="number" min="0" step="1" value={form.envasado_sacos_envasados}
-                style={{ borderColor: form.envasado_sacos_envasados === '' || empaqueOk ? undefined : '#dc2626' }}
+                style={{ borderColor: form.envasado_sacos_envasados === '' || empaqueOk ? undefined : 'var(--danger)' }}
                 onChange={e => setForm({ ...form, envasado_sacos_envasados: e.target.value })} />
             </div>
           )}
 
-          {error && <p style={{ color: '#dc2626', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
         </div>
         <div className="modal-actions">
           <button className="btn small" onClick={onClose} disabled={saving}>Cancelar</button>

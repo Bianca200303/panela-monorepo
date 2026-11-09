@@ -62,14 +62,14 @@ export default function PdfHeaderModal({ order, container, data, loading, client
           </div>
         </div>
 
-        {error && <div className="no-print-actions" style={{ color: '#dc2626', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+        {error && <div className="no-print-actions" style={{ color: 'var(--danger)', marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
         {loading ? (
           <p className="muted">Cargando datos...</p>
         ) : (
           <>
             {/* Cliente y número de venta editables (por si no se llenaron al crear la orden) */}
-            <div className="no-print-actions" style={{ background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 20px', marginBottom: 24 }}>
+            <div className="no-print-actions" style={{ background: 'var(--surface-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 20px', marginBottom: 24 }}>
               <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>Completar si falta</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
@@ -90,10 +90,10 @@ export default function PdfHeaderModal({ order, container, data, loading, client
             </div>
 
             {/* Encabezado imprimible */}
-            <div style={{ border: '2px solid #1e3a5f', borderRadius: 8, overflow: 'hidden', fontSize: 13 }}>
+            <div style={{ border: '2px solid var(--text-heading)', borderRadius: 8, overflow: 'hidden', fontSize: 13 }}>
 
               {/* Título */}
-              <div style={{ background: '#1e3a5f', color: '#fff', padding: '10px 20px', textAlign: 'center' }}>
+              <div style={{ background: 'var(--text-heading)', color: '#fff', padding: '10px 20px', textAlign: 'center' }}>
                 <div style={{ fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', opacity: 0.75 }}>Informe de Trazabilidad</div>
                 <div style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>{order.client_order_number ?? order.order_code} — {container?.container_number ?? 'Sin contenedor'}</div>
               </div>
@@ -114,11 +114,11 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                     { label: 'Tamizado (inicio — fin)', value: tamizadoStr },
                     { label: 'Certificaciones',         value: (data?.certNames ?? []).join(' · ') || '—' },
                   ].map(({ label, value }) => (
-                    <tr key={label} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                      <td style={{ padding: '7px 16px', fontWeight: 600, color: '#000', background: '#f8fafc', borderRight: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>
+                    <tr key={label} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                      <td style={{ padding: '7px 16px', fontWeight: 600, color: '#000', background: 'var(--surface-muted)', borderRight: '1px solid var(--border-soft)', whiteSpace: 'nowrap' }}>
                         {label}
                       </td>
-                      <td style={{ padding: '7px 16px', color: '#1e293b', fontWeight: 500 }}>
+                      <td style={{ padding: '7px 16px', color: 'var(--text-strong)', fontWeight: 500 }}>
                         {value}
                       </td>
                     </tr>
@@ -126,14 +126,14 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                 </tbody>
               </table>
 
-              <div style={{ padding: '6px 16px', background: '#f8fafc', fontSize: 10, color: '#000', textAlign: 'right', borderTop: '1px solid #e2e8f0' }}>
+              <div style={{ padding: '6px 16px', background: 'var(--surface-muted)', fontSize: 10, color: '#000', textAlign: 'right', borderTop: '1px solid var(--border-soft)' }}>
                 Generado el {new Date().toLocaleDateString('es-PE', { day: '2-digit', month: 'long', year: 'numeric' })}
               </div>
             </div>
 
             {/* ── Lotes de envasado ── */}
-            <div style={{ border: '2px solid #1e3a5f', borderRadius: 8, overflow: 'hidden', fontSize: 12, marginTop: 20 }}>
-              <div style={{ background: '#1e3a5f', color: '#fff', padding: '8px 16px' }}>
+            <div style={{ border: '2px solid var(--text-heading)', borderRadius: 8, overflow: 'hidden', fontSize: 12, marginTop: 20 }}>
+              <div style={{ background: 'var(--text-heading)', color: '#fff', padding: '8px 16px' }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>Lotes de Envasado</div>
               </div>
               {(order.plant_production_batches ?? []).length === 0 ? (
@@ -141,9 +141,9 @@ export default function PdfHeaderModal({ order, container, data, loading, client
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ background: '#f1f5f9' }}>
+                    <tr style={{ background: 'var(--surface-alt)' }}>
                       {['N° Lote', 'Empaque', 'Cajas', 'Peso total (kg)', 'Pallets', 'Año vencimiento', 'Descripción'].map(h => (
-                        <th key={h} style={{ padding: '7px 10px', fontWeight: 700, color: '#334155', fontSize: 11, borderBottom: '1px solid #cbd5e1', textAlign: 'left', whiteSpace: 'nowrap' }}>{h}</th>
+                        <th key={h} style={{ padding: '7px 10px', fontWeight: 700, color: '#334155', fontSize: 11, borderBottom: '1px solid var(--border-stronger)', textAlign: 'left', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -153,28 +153,28 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                         ? loteKg(b).toLocaleString('es-PE', { maximumFractionDigits: 1 })
                         : '—'
                       return (
-                        <tr key={b.id} style={{ borderBottom: '1px solid #e2e8f0', background: i % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                          <td style={{ padding: '7px 10px', fontWeight: 600, color: '#1e3a5f', whiteSpace: 'nowrap' }}>{loteLabel(b)}</td>
-                          <td style={{ padding: '7px 10px', color: '#1e293b' }}>{[b.brand, packagingLabel(b)].filter(Boolean).join(' · ') || '—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#1e293b', whiteSpace: 'nowrap' }}>{b.boxes_count ?? '—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#1e293b', whiteSpace: 'nowrap' }}>{totalKg}</td>
-                          <td style={{ padding: '7px 10px', color: '#1e293b', textAlign: 'center' }}>{b.pallet_count ?? '—'}</td>
-                          <td style={{ padding: '7px 10px', color: '#1e293b', whiteSpace: 'nowrap' }}>{b.best_before_date ? b.best_before_date.slice(0, 4) : '—'}</td>
+                        <tr key={b.id} style={{ borderBottom: '1px solid var(--border-soft)', background: i % 2 === 0 ? '#fff' : 'var(--surface-muted)' }}>
+                          <td style={{ padding: '7px 10px', fontWeight: 600, color: 'var(--text-heading)', whiteSpace: 'nowrap' }}>{loteLabel(b)}</td>
+                          <td style={{ padding: '7px 10px', color: 'var(--text-strong)' }}>{[b.brand, packagingLabel(b)].filter(Boolean).join(' · ') || '—'}</td>
+                          <td style={{ padding: '7px 10px', color: 'var(--text-strong)', whiteSpace: 'nowrap' }}>{b.boxes_count ?? '—'}</td>
+                          <td style={{ padding: '7px 10px', color: 'var(--text-strong)', whiteSpace: 'nowrap' }}>{totalKg}</td>
+                          <td style={{ padding: '7px 10px', color: 'var(--text-strong)', textAlign: 'center' }}>{b.pallet_count ?? '—'}</td>
+                          <td style={{ padding: '7px 10px', color: 'var(--text-strong)', whiteSpace: 'nowrap' }}>{b.best_before_date ? b.best_before_date.slice(0, 4) : '—'}</td>
                           <td style={{ padding: '7px 10px', color: '#000' }}>{b.description || '—'}</td>
                         </tr>
                       )
                     })}
                   </tbody>
                   <tfoot>
-                    <tr style={{ background: '#f1f5f9', borderTop: '2px solid #cbd5e1' }}>
+                    <tr style={{ background: 'var(--surface-alt)', borderTop: '2px solid var(--border-stronger)' }}>
                       <td colSpan={3} style={{ padding: '7px 10px', fontWeight: 700, color: '#334155', fontSize: 11 }}>TOTAL</td>
-                      <td style={{ padding: '7px 10px', fontWeight: 700, color: '#1e3a5f', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '7px 10px', fontWeight: 700, color: 'var(--text-heading)', whiteSpace: 'nowrap' }}>
                         {(() => {
                           const tot = (order.plant_production_batches ?? []).reduce((acc, b) => acc + loteKg(b), 0)
                           return tot > 0 ? tot.toLocaleString('es-PE', { maximumFractionDigits: 1 }) : '—'
                         })()}
                       </td>
-                      <td style={{ padding: '7px 10px', fontWeight: 700, color: '#1e3a5f', textAlign: 'center' }}>
+                      <td style={{ padding: '7px 10px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'center' }}>
                         {(() => {
                           const tot = (order.plant_production_batches ?? []).reduce((acc, b) => acc + (b.pallet_count ?? 0), 0)
                           return tot > 0 ? tot : '—'
@@ -190,16 +190,16 @@ export default function PdfHeaderModal({ order, container, data, loading, client
             {/* ── Trazabilidad de materia prima ── */}
             {(() => {
               const rows = data?.fieldRows ?? []
-              const thS = { padding: '6px 8px', fontWeight: 700, color: '#334155', fontSize: 10, borderBottom: '1px solid #cbd5e1', textAlign: 'left', whiteSpace: 'nowrap', verticalAlign: 'bottom', borderRight: '1px solid #e2e8f0' }
-              const tdS = { padding: '6px 8px', color: '#1e293b', fontSize: 11, verticalAlign: 'top', borderRight: '1px solid #e2e8f0' }
+              const thS = { padding: '6px 8px', fontWeight: 700, color: '#334155', fontSize: 10, borderBottom: '1px solid var(--border-stronger)', textAlign: 'left', whiteSpace: 'nowrap', verticalAlign: 'bottom', borderRight: '1px solid var(--border-soft)' }
+              const tdS = { padding: '6px 8px', color: 'var(--text-strong)', fontSize: 11, verticalAlign: 'top', borderRight: '1px solid var(--border-soft)' }
               const fmtKg = v => v > 0 ? v.toLocaleString('es-PE', { maximumFractionDigits: 1 }) : '—'
               const totalSacos  = rows.reduce((a, r) => a + r.sacos,    0)
               const totalSeca   = rows.reduce((a, r) => a + r.kg_seca,  0)
               const totalSuelta = rows.reduce((a, r) => a + r.kg_suelta, 0)
               const totalCerosa = rows.reduce((a, r) => a + r.kg_cerosa, 0)
               return (
-                <div style={{ border: '2px solid #1e3a5f', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
-                  <div style={{ background: '#1e3a5f', color: '#fff', padding: '8px 16px' }}>
+                <div style={{ border: '2px solid var(--text-heading)', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
+                  <div style={{ background: 'var(--text-heading)', color: '#fff', padding: '8px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>Trazabilidad de Materia Prima — Producciones de Campo</div>
                   </div>
                   {rows.length === 0 ? (
@@ -209,7 +209,7 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                       <div className="pdf-table-scroll" style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto' }}>
                         <thead>
-                          <tr style={{ background: '#f1f5f9' }}>
+                          <tr style={{ background: 'var(--surface-alt)' }}>
                             <th rowSpan={2} style={thS}>N° Lote campo</th>
                             <th rowSpan={2} style={thS}>Productor</th>
                             <th rowSpan={2} style={thS}>DNI</th>
@@ -221,7 +221,7 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                             <th rowSpan={2} style={{ ...thS, textAlign: 'right' }}>Sacos</th>
                             <th colSpan={3} style={{ ...thS, textAlign: 'center', background: '#e8edf4' }}>Tipo de panela (kg)</th>
                           </tr>
-                          <tr style={{ background: '#f1f5f9' }}>
+                          <tr style={{ background: 'var(--surface-alt)' }}>
                             <th style={{ ...thS, background: '#e8edf4' }}>Seca</th>
                             <th style={{ ...thS, background: '#e8edf4' }}>Suelta</th>
                             <th style={{ ...thS, background: '#e8edf4', borderRight: 'none' }}>Cerosa</th>
@@ -229,13 +229,13 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                         </thead>
                         <tbody>
                           {rows.map((row, i) => (
-                            <tr key={row.batch_code} style={{ borderBottom: '1px solid #e2e8f0', background: i % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                              <td style={{ ...tdS, fontWeight: 600, color: '#1e3a5f', whiteSpace: 'nowrap' }}>{row.batch_code}</td>
+                            <tr key={row.batch_code} style={{ borderBottom: '1px solid var(--border-soft)', background: i % 2 === 0 ? '#fff' : 'var(--surface-muted)' }}>
+                              <td style={{ ...tdS, fontWeight: 600, color: 'var(--text-heading)', whiteSpace: 'nowrap' }}>{row.batch_code}</td>
                               <td style={tdS}>{row.producer_name || '—'}</td>
                               <td style={{ ...tdS, whiteSpace: 'nowrap' }}>{row.dni}</td>
                               <td style={{ ...tdS, whiteSpace: 'nowrap' }}>{row.modulo}</td>
                               <td style={{ ...tdS, textAlign: 'center' }}>
-                                <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: row.is_member ? '#dcfce7' : '#fee2e2', color: row.is_member ? '#166534' : '#991b1b' }}>
+                                <span style={{ padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: row.is_member ? 'var(--success-bg-strong)' : 'var(--danger-bg)', color: row.is_member ? 'var(--success-text)' : 'var(--danger-text)' }}>
                                   {row.is_member ? 'Sí' : 'No'}
                                 </span>
                               </td>
@@ -250,12 +250,12 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                           ))}
                         </tbody>
                         <tfoot>
-                          <tr style={{ background: '#f1f5f9', borderTop: '2px solid #cbd5e1' }}>
+                          <tr style={{ background: 'var(--surface-alt)', borderTop: '2px solid var(--border-stronger)' }}>
                             <td colSpan={8} style={{ padding: '7px 8px', fontWeight: 700, color: '#334155', fontSize: 11 }}>TOTAL GENERAL</td>
-                            <td style={{ padding: '7px 8px', fontWeight: 700, color: '#1e3a5f', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{totalSacos > 0 ? totalSacos : '—'}</td>
-                            <td style={{ padding: '7px 8px', fontWeight: 700, color: '#1e3a5f', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{fmtKg(totalSeca)}</td>
-                            <td style={{ padding: '7px 8px', fontWeight: 700, color: '#1e3a5f', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{fmtKg(totalSuelta)}</td>
-                            <td style={{ padding: '7px 8px', fontWeight: 700, color: '#1e3a5f', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap', borderRight: 'none' }}>{fmtKg(totalCerosa)}</td>
+                            <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{totalSacos > 0 ? totalSacos : '—'}</td>
+                            <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{fmtKg(totalSeca)}</td>
+                            <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>{fmtKg(totalSuelta)}</td>
+                            <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap', borderRight: 'none' }}>{fmtKg(totalCerosa)}</td>
                           </tr>
                         </tfoot>
                       </table>
@@ -278,17 +278,17 @@ export default function PdfHeaderModal({ order, container, data, loading, client
               const fmtKg   = v => (v != null && v > 0) ? Number(v).toLocaleString('es-PE', { maximumFractionDigits: 1 }) : '—'
               const fmtPct  = (part, total) => total > 0 ? `${((part / total) * 100).toFixed(1)}%` : '—'
               const fmtDate = d => d ? new Date(d).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—'
-              const thH = { padding: '6px 8px', fontWeight: 700, color: '#334155', fontSize: 10, borderBottom: '1px solid #cbd5e1', textAlign: 'left', whiteSpace: 'nowrap', borderRight: '1px solid #e2e8f0' }
-              const tdH = { padding: '6px 8px', color: '#1e293b', fontSize: 11, borderRight: '1px solid #e2e8f0', whiteSpace: 'nowrap' }
+              const thH = { padding: '6px 8px', fontWeight: 700, color: '#334155', fontSize: 10, borderBottom: '1px solid var(--border-stronger)', textAlign: 'left', whiteSpace: 'nowrap', borderRight: '1px solid var(--border-soft)' }
+              const tdH = { padding: '6px 8px', color: 'var(--text-strong)', fontSize: 11, borderRight: '1px solid var(--border-soft)', whiteSpace: 'nowrap' }
               return (
-                <div style={{ border: '2px solid #1e3a5f', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
-                  <div style={{ background: '#1e3a5f', color: '#fff', padding: '8px 16px' }}>
+                <div style={{ border: '2px solid var(--text-heading)', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
+                  <div style={{ background: 'var(--text-heading)', color: '#fff', padding: '8px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>Control de Homogenizado y Tamizado</div>
                   </div>
                   <div className="pdf-table-scroll" style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto' }}>
                       <thead>
-                        <tr style={{ background: '#f1f5f9' }}>
+                        <tr style={{ background: 'var(--surface-alt)' }}>
                           <th style={thH}>N° Lote envasado</th>
                           <th style={thH}>N° Bunque</th>
                           <th style={thH}>Presentación</th>
@@ -311,16 +311,16 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                           const esParcial = Math.abs(tamKg - Number(b.tamizada_kg ?? 0)) > 0.01
                           const presentacion = [pb.brand, packagingLabel(pb)].filter(Boolean).join(' · ') || '—'
                           return (
-                            <tr key={`${pb.id}-${b.id}`} style={{ borderBottom: '1px solid #e2e8f0', background: i % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                              <td style={{ ...tdH, fontWeight: 600, color: '#1e3a5f' }}>{loteLabel(pb)}</td>
+                            <tr key={`${pb.id}-${b.id}`} style={{ borderBottom: '1px solid var(--border-soft)', background: i % 2 === 0 ? '#fff' : 'var(--surface-muted)' }}>
+                              <td style={{ ...tdH, fontWeight: 600, color: 'var(--text-heading)' }}>{loteLabel(pb)}</td>
                               <td style={tdH}>{b.bunque_number}{esParcial ? ' (parcial)' : ''}</td>
                               <td style={tdH}>{presentacion}</td>
                               <td style={{ ...tdH, textAlign: 'right' }}>{fmtKg(entKg)}</td>
-                              <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? '#f0fdf4' : '#dcfce7' }}>{fmtKg(tamKg)}</td>
+                              <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? 'var(--success-bg)' : 'var(--success-bg-strong)' }}>{fmtKg(tamKg)}</td>
                               <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? 'rgba(15,76,92,0.10)' : 'rgba(15,76,92,0.18)' }}>{fmtKg(repKg)}</td>
                               <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? '#fffde7' : '#fef9c3' }}>{fmtKg(desKg)}</td>
                               <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? '#fdf2f8' : '#fce4ec' }}>{fmtKg(merKg)}</td>
-                              <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? '#fdf2f8' : '#fce4ec', color: entKg > 0 && merKg / entKg > 0.05 ? '#b91c1c' : '#374151' }}>
+                              <td style={{ ...tdH, textAlign: 'right', background: i % 2 === 0 ? '#fdf2f8' : '#fce4ec', color: entKg > 0 && merKg / entKg > 0.05 ? 'var(--danger-strong)' : 'var(--text-secondary)' }}>
                                 {fmtPct(merKg, entKg)}
                               </td>
                               <td style={{ ...tdH, textAlign: 'center', borderRight: 'none' }}>{fmtDate(b.processed_at)}</td>
@@ -336,14 +336,14 @@ export default function PdfHeaderModal({ order, container, data, loading, client
                           const totDes = rows.reduce((s, { b }) => s + b.allocated_descarte_kg, 0)
                           const totMer = rows.reduce((s, { b }) => s + b.allocated_merma_kg, 0)
                           return (
-                            <tr style={{ background: '#f1f5f9', borderTop: '2px solid #cbd5e1' }}>
+                            <tr style={{ background: 'var(--surface-alt)', borderTop: '2px solid var(--border-stronger)' }}>
                               <td colSpan={3} style={{ padding: '7px 8px', fontWeight: 700, color: '#334155', fontSize: 11 }}>TOTALES</td>
-                              <td style={{ padding: '7px 8px', fontWeight: 700, color: '#1e3a5f', textAlign: 'right', fontSize: 11 }}>{fmtKg(totEnt)}</td>
-                              <td style={{ padding: '7px 8px', fontWeight: 700, color: '#166534', textAlign: 'right', fontSize: 11 }}>{fmtKg(totTam)}</td>
+                              <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--text-heading)', textAlign: 'right', fontSize: 11 }}>{fmtKg(totEnt)}</td>
+                              <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--success-text)', textAlign: 'right', fontSize: 11 }}>{fmtKg(totTam)}</td>
                               <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--primary-600)', textAlign: 'right', fontSize: 11 }}>{fmtKg(totRep)}</td>
-                              <td style={{ padding: '7px 8px', fontWeight: 700, color: '#92400e', textAlign: 'right', fontSize: 11 }}>{fmtKg(totDes)}</td>
-                              <td style={{ padding: '7px 8px', fontWeight: 700, color: '#b91c1c', textAlign: 'right', fontSize: 11 }}>{fmtKg(totMer)}</td>
-                              <td style={{ padding: '7px 8px', fontWeight: 700, color: '#b91c1c', textAlign: 'right', fontSize: 11 }}>{fmtPct(totMer, totEnt)}</td>
+                              <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--warning-text)', textAlign: 'right', fontSize: 11 }}>{fmtKg(totDes)}</td>
+                              <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--danger-strong)', textAlign: 'right', fontSize: 11 }}>{fmtKg(totMer)}</td>
+                              <td style={{ padding: '7px 8px', fontWeight: 700, color: 'var(--danger-strong)', textAlign: 'right', fontSize: 11 }}>{fmtPct(totMer, totEnt)}</td>
                               <td style={{ padding: '7px 8px', borderRight: 'none' }} />
                             </tr>
                           )
@@ -370,23 +370,23 @@ export default function PdfHeaderModal({ order, container, data, loading, client
               const nEnvasado  = batches.length
               const nCampo     = new Set(allInputs.map(h => h.source_exit_item_id).filter(Boolean)).size
               const items = [
-                { label: 'Lotes de envasado',      value: nEnvasado,       color: '#1e3a5f' },
-                { label: 'Lotes de campo usados',   value: nCampo,          color: '#1e3a5f' },
-                { label: 'Total kg MP entrada',     value: fmtKg(totEnt),   color: '#1e3a5f' },
-                { label: 'Total kg tamizada',        value: fmtKg(totTam),   color: '#166534' },
+                { label: 'Lotes de envasado',      value: nEnvasado,       color: 'var(--text-heading)' },
+                { label: 'Lotes de campo usados',   value: nCampo,          color: 'var(--text-heading)' },
+                { label: 'Total kg MP entrada',     value: fmtKg(totEnt),   color: 'var(--text-heading)' },
+                { label: 'Total kg tamizada',        value: fmtKg(totTam),   color: 'var(--success-text)' },
                 { label: 'Total kg reproceso',       value: fmtKg(totRep),   color: 'var(--primary-600)' },
-                { label: 'Total kg descarte',        value: fmtKg(totDes),   color: '#92400e' },
-                { label: 'Total kg merma',           value: fmtKg(totMer),   color: '#b91c1c' },
-                { label: '% merma general',          value: pctMer,          color: '#b91c1c' },
+                { label: 'Total kg descarte',        value: fmtKg(totDes),   color: 'var(--warning-text)' },
+                { label: 'Total kg merma',           value: fmtKg(totMer),   color: 'var(--danger-strong)' },
+                { label: '% merma general',          value: pctMer,          color: 'var(--danger-strong)' },
               ]
               return (
-                <div style={{ border: '2px solid #1e3a5f', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
-                  <div style={{ background: '#1e3a5f', color: '#fff', padding: '8px 16px' }}>
+                <div style={{ border: '2px solid var(--text-heading)', borderRadius: 8, overflow: 'hidden', marginTop: 20 }}>
+                  <div style={{ background: 'var(--text-heading)', color: '#fff', padding: '8px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>Consolidado Total de Homogenizado y Tamizado</div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 0 }}>
                     {items.map(({ label, value, color }, i) => (
-                      <div key={label} style={{ padding: '12px 16px', borderRight: i < items.length - 1 ? '1px solid #e2e8f0' : 'none', borderBottom: '1px solid #e2e8f0', background: '#fff' }}>
+                      <div key={label} style={{ padding: '12px 16px', borderRight: i < items.length - 1 ? '1px solid var(--border-soft)' : 'none', borderBottom: '1px solid var(--border-soft)', background: '#fff' }}>
                         <div style={{ fontSize: 10, color: '#000', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
                         <div style={{ fontSize: 18, fontWeight: 700, color }}>{value}</div>
                       </div>

@@ -1,10 +1,14 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
 import { READING_POINTS, ESTADO_LABELS } from '../lib/formatos/calibracionBalanzasCaes'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
+import { useActiveCatalog } from '@panela/core/hooks/useActiveCatalog'
 
 // Verificación Interna de Calibración de Balanzas (CAESP-CC-PP-BPM-RE-MYC-002)
 // -- SOLO CAES, ver COOPERATIVE.features.controlesPlantaCAES en
@@ -19,8 +23,10 @@ function todayISO() {
 }
 
 function emptyForm() {
-  const f = { control_date: todayISO(), balance_code: '', area: '', equipment_name: '', error_maximo_permitido: '', peso_patron: '', estado: '', acciones_correctivas: '' }
-  for (const p of READING_POINTS) { f[`${p}_peso`] = ''; f[`${p}_error`] = '' }
+  // Valores por defecto: pesa patrón (muestra) de 0.5 kg y cada lectura en 500 g con
+  // error 0 (lo habitual); se corrigen a mano si la balanza marca distinto.
+  const f = { control_date: todayISO(), balance_code: '', area: '', equipment_name: '', error_maximo_permitido: '', peso_patron: '0.5 kg', estado: '', acciones_correctivas: '' }
+  for (const p of READING_POINTS) { f[`${p}_peso`] = '500'; f[`${p}_error`] = '0' }
   return f
 }
 
@@ -48,19 +54,37 @@ export default function CalibracionBalanzasCaesPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_balance_calibration_caes')
-      .select('id, control_date, balance_code, area, equipment_name, estado, registered_by:web_users!pbcc_created_by_fkey ( first_name, last_name )')
+      .select('id, control_date, balance_code, area, equipment_name, estado, audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pbcc_created_by_fkey ( first_name, last_name )')
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
       .limit(50)
     setRows(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
   useEffect(() => { loadHistory() }, [loadHistory])
+
+  // Balanzas del catálogo (Catálogos → Balanzas): el código se elige de aquí
+  // y trae área, denominación y error máximo permitido.
+  const balances = useActiveCatalog('balanzas')
+
+  function selectBalance(code) {
+    const b = balances.find(x => x.code === code)
+    setForm(f => ({
+      ...f,
+      balance_code: code,
+      area: b?.area ?? f.area,
+      equipment_name: b?.equipment_name ?? f.equipment_name,
+      error_maximo_permitido: b?.error_maximo_permitido ?? f.error_maximo_permitido,
+    }))
+  }
 
   function startNew() {
     setEditingId(null)
@@ -125,6 +149,7 @@ export default function CalibracionBalanzasCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -147,6 +172,8 @@ export default function CalibracionBalanzasCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : rows.length === 0 ? (
           <EmptyState message="No hay registros de calibración de balanzas aún." />
         ) : (
@@ -166,7 +193,7 @@ export default function CalibracionBalanzasCaesPage() {
                 </div>
                 <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                   {r.equipment_name && `${r.equipment_name} · `}
-                  {r.registered_by && `Registrado por: ${r.registered_by.first_name} ${r.registered_by.last_name}`}
+                  <AuditStamp row={r} />
                 </div>
               </div>
             ))}
@@ -192,7 +219,14 @@ export default function CalibracionBalanzasCaesPage() {
           </div>
           <div className="field" style={{ margin: 0 }}>
             <label>Código de balanza</label>
-            <input type="text" value={form.balance_code} onChange={e => setForm({ ...form, balance_code: e.target.value })} placeholder="Ej: BAG-012" />
+            <select value={form.balance_code} onChange={e => selectBalance(e.target.value)}>
+              <option value="">{balances.length ? 'Seleccione...' : 'Sin balanzas en Catálogos'}</option>
+              {balances.map(b => <option key={b.id} value={b.code}>{b.code}{b.area ? ` — ${b.area}` : ''}</option>)}
+              {/* Código guardado antes que no está en el catálogo (registros viejos). */}
+              {form.balance_code && !balances.some(b => b.code === form.balance_code) && (
+                <option value={form.balance_code}>{form.balance_code}</option>
+              )}
+            </select>
           </div>
           <div className="field" style={{ margin: 0 }}>
             <label>Área</label>
@@ -265,7 +299,7 @@ export default function CalibracionBalanzasCaesPage() {
         </div>
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

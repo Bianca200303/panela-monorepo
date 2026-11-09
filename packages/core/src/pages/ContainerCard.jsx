@@ -1,10 +1,14 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
 import { useConfirm } from '../hooks/useConfirm'
 import { useCooperative } from '../lib/cooperativeContext'
 import { loteKg, formatDate, isOrderNacional } from '../lib/loteHelpers'
 import { getLoteLabelLower, getLoteLabelPluralLower } from '../lib/labels'
 import OrderNumberField from '../components/OrderNumberField'
+import InternalContainerField from '../components/InternalContainerField'
 import Icon from '../components/Icon'
+import AuditStamp from '../components/AuditStamp'
+import ActionMenu from '../components/ActionMenu'
 
 const CONTAINER_STATUS_LABELS = {
   preparando: { text: 'Preparando', cls: 'warn' },
@@ -14,12 +18,34 @@ const CONTAINER_STATUS_LABELS = {
   entregado: { text: 'Entregado', cls: 'ok' },
 }
 
+const orderNumber = (o) => o.client_order_number ?? o.order_code
+
+// Datos de una etapa en una sola línea ("Sello X · 20ft · Maersk"), mismo
+// patrón que las etapas del lote en OrderCard.jsx.
+function Facts({ items }) {
+  const list = items.filter(Boolean)
+  if (list.length === 0) return <div className="stage-empty">Sin registrar</div>
+  return <div className="stage-facts">{list.map((it, i) => <span key={i}>{it}</span>)}</div>
+}
+
+// Estado de una etapa junto a su título (✓ listo / ⚠ pendiente).
+function StageState({ state, text }) {
+  if (!state) return null
+  return (
+    <span className={`control-chip ${state === 'ok' ? 'ok' : 'pending'}`}>
+      <Icon name={state === 'ok' ? 'check' : 'alertTriangle'} size={13} />
+      {text}
+    </span>
+  )
+}
+
 export default function ContainerCard({
-  container, orders, dispatch, carga, packingListNacional, onCarga, onDispatch, onInforme, onDocumentos, onResumenTrazabilidad,
+  container, orders, dispatch, carga, packingListNacional, onCarga, onDispatch, onDocumentos, onResumenTrazabilidad,
   onOrdenSalidaPdf,
   onPackingListNacional,
   onControlTransporte, onReopenOrder, onReload,
   onEditarContenedor,
+  controlsVersion = 0,
 }) {
   const COOPERATIVE = useCooperative()
   const LOTE_LABEL_LOWER = getLoteLabelLower(COOPERATIVE, orders[0])
@@ -40,6 +66,29 @@ export default function ContainerCard({
     s + (o.plant_production_batches ?? []).reduce((s2, b) => s2 + loteKg(b), 0), 0
   )
 
+  // Control de Unidad de Transporte (CAES, Nacional y Exportación): una lista
+  // abierta de 0 a N controles. Se cuenta solo con la tarjeta abierta, y se
+  // vuelve a contar al cerrar su modal (controlsVersion, ver EmbarquePage).
+  const tieneControlTransporte = !!COOPERATIVE?.features?.ventaNacionalExportacion
+  // También cuántos tramos tienen pendiente la GR del transportista (es
+  // opcional y suele llegar tarde -- se avisa para no olvidarla).
+  const [transportCount, setTransportCount] = useState(null)
+  const [grTranspPendientes, setGrTranspPendientes] = useState(0)
+  useEffect(() => {
+    if (!open || !tieneControlTransporte) return
+    let cancelled = false
+    supabase
+      .from('plant_transport_unit_controls_caes')
+      .select('id, guia_remision_transportista')
+      .eq('container_id', container.id)
+      .then(({ data, error }) => {
+        if (cancelled || error) return
+        setTransportCount((data ?? []).length)
+        setGrTranspPendientes((data ?? []).filter(t => !t.guia_remision_transportista).length)
+      })
+    return () => { cancelled = true }
+  }, [open, tieneControlTransporte, container.id, controlsVersion])
+
   // Una vez despachado el contenedor ya salió físicamente -- no tiene
   // sentido reabrir una orden de ahí adentro. Con carga (Packing List) sin
   // despacho todavía se puede, pero se avisa porque puede dejar el Packing
@@ -48,7 +97,7 @@ export default function ContainerCard({
     setReopenError('')
     const ok = await confirm({
       title: 'Reabrir orden',
-      message: `¿Reabrir la orden ${order.client_order_number ?? order.order_code} y sacarla d${esVentaNacional ? 'e este despacho nacional' : `el contenedor ${container.container_number ?? 'sin número'}`}? Va a volver a "En proceso" en Órdenes para poder corregir sus ${LOTE_LABEL_PLURAL_LOWER}.${carga ? ' El Packing List de este contenedor va a quedar desactualizado -- revíselo después.' : ''}`,
+      message: `¿Reabrir la orden ${orderNumber(order)} y sacarla d${esVentaNacional ? 'e este despacho nacional' : `el contenedor ${container.container_number ?? 'sin número'}`}? Va a volver a "En proceso" en Órdenes para poder corregir sus ${LOTE_LABEL_PLURAL_LOWER}.${carga ? ' El Packing List de este contenedor va a quedar desactualizado -- revíselo después.' : ''}`,
       confirmText: 'Reabrir orden',
       danger: true,
     })
@@ -60,162 +109,183 @@ export default function ContainerCard({
     }
   }
 
+  // Estado de la carga: Packing List (exportación) o Packing List-Nacional.
+  const cargaDoc = esVentaNacional ? packingListNacional : carga
+  const cargaTerminada = cargaDoc?.status === 'terminado'
+
+  // Siguiente paso, visible sin abrir la tarjeta (mismo criterio que la
+  // línea de cada orden en OrderCard.jsx).
+  const nextStep = dispatch ? null
+    : !cargaDoc ? `Falta registrar ${esVentaNacional ? 'el Packing List-Nacional' : 'la carga'}`
+    : !cargaTerminada ? `Falta terminar ${esVentaNacional ? 'el Packing List-Nacional' : 'la carga'}`
+    : 'Falta registrar el despacho'
+
+  // Lo que identifica a cada tarjeta sin abrirla. Un despacho nacional no
+  // tiene número de contenedor: se reconoce por la orden y su Packing List
+  // (antes todas decían igual "Despacho nacional").
+  const title = esVentaNacional
+    ? `Orden ${orders.map(orderNumber).join(', ')}`
+    : `Contenedor ${container.container_number ?? 'sin número'}`
+  const subtitle = [
+    esVentaNacional ? packingListNacional?.packing_list_numero : container.destination_port,
+    !esVentaNacional && orders.length > 1 && `${orders.length} órdenes`,
+    `${totalKg.toFixed(0)} kg`,
+    dispatch?.dispatch_date ? formatDate(dispatch.dispatch_date)
+      : !esVentaNacional && container.departure_date ? `zarpe ${formatDate(container.departure_date)}` : null,
+  ].filter(Boolean).join(' · ')
+
   return (
     <div className="item">
       <header style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <strong>{esVentaNacional ? 'Despacho nacional' : `Contenedor ${container.container_number ?? 'Sin número'}`}</strong>
-          <span className="muted small">{orders.length} orden(es) · {totalKg.toFixed(0)} kg</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <strong>{title}</strong>
+          <AuditStamp row={container} />
+          <span className="muted small">{subtitle}</span>
+          {nextStep && (
+            <span className="next-step pending">
+              <Icon name="clock" size={13} />
+              {nextStep}
+            </span>
+          )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`tag dot ${st.cls}`}>{st.text}</span>
+          <ActionMenu
+            label="Más acciones"
+            items={[
+              { label: 'Documentos', onClick: onDocumentos },
+              // Solo una vez despachado -- antes de eso la trazabilidad del
+              // contenedor todavía puede cambiar (lotes, materia prima).
+              dispatch && { label: 'Resumen de trazabilidad', onClick: onResumenTrazabilidad },
+              dispatch && { label: 'Orden de Salida (PDF)', onClick: onOrdenSalidaPdf },
+            ]}
+          />
           <Icon name={open ? 'chevronUp' : 'chevronDown'} size={14} style={{ color: 'var(--muted)' }} />
         </div>
       </header>
 
       {open && (
         <>
-          <div className="meta" style={{ marginTop: 6 }}>
+          {/* 1. Datos -- único lugar donde se pueden cargar/corregir Factura
+              Comercial y N° Certificado de Transacción después de creado
+              el contenedor/despacho. */}
+          <div className="stage-card">
+            <div className="stage-card-title">
+              <span>{esVentaNacional ? 'Datos del despacho' : 'Datos del contenedor'}</span>
+              <span className="stage-card-actions">
+                <button className="btn small outline" onClick={onEditarContenedor}>Editar</button>
+              </span>
+            </div>
             {esVentaNacional ? (
-              <>
-                {packingListNacional?.packing_list_numero && <div>N° Packing List: <strong>{packingListNacional.packing_list_numero}</strong></div>}
-                {container.extra_data?.factura_comercial  && <div>Factura Comercial: {container.extra_data.factura_comercial}</div>}
-                {packingListNacional?.guia_tramo_interno   && <div>Guía tramo interno: {packingListNacional.guia_tramo_interno}</div>}
-                {packingListNacional?.guia_tramo_final     && <div>Guía tramo final: {packingListNacional.guia_tramo_final}</div>}
-              </>
+              <Facts items={[
+                packingListNacional?.packing_list_numero && <>Packing List <strong>{packingListNacional.packing_list_numero}</strong></>,
+                container.extra_data?.factura_comercial && <>factura <strong>{container.extra_data.factura_comercial}</strong></>,
+              ]} />
             ) : (
-              <>
-                {container.seal_number      && <div>Sello: <strong>{container.seal_number}</strong> · {container.container_size ?? '20'}ft</div>}
-                {container.shipping_line    && <div>Naviera: {container.shipping_line}</div>}
-                {container.destination_port && <div>Destino: {container.destination_port}</div>}
-                {container.booking_number   && <div>Booking: {container.booking_number}</div>}
-                {container.bill_of_lading   && <div>BL: {container.bill_of_lading}</div>}
-                {container.departure_date   && <div>Zarpe: {formatDate(container.departure_date)}</div>}
-              </>
+              <Facts items={[
+                container.seal_number && <>sello <strong>{container.seal_number}</strong></>,
+                <><strong>{container.container_size ?? '20'}</strong> ft</>,
+                container.shipping_line && <strong>{container.shipping_line}</strong>,
+                container.destination_port && <>destino <strong>{container.destination_port}</strong></>,
+                container.booking_number && <>booking <strong>{container.booking_number}</strong></>,
+                container.bill_of_lading && <>BL <strong>{container.bill_of_lading}</strong></>,
+                container.departure_date && <>zarpe <strong>{formatDate(container.departure_date)}</strong></>,
+              ]} />
             )}
           </div>
 
-          {/* Único lugar donde se pueden cargar/corregir Factura Comercial y
-              N° Certificado de Transacción después de creado el
-              contenedor/despacho -- antes solo se podían cargar al asignar
-              la orden por primera vez (openModalContainer), sin forma de
-              volver a esos campos una vez despachado. */}
-          <div style={{ marginTop: 6 }}>
-            <button className="btn small outline" style={{ fontSize: 11, padding: '2px 8px' }} onClick={onEditarContenedor}>
-              Editar datos {esVentaNacional ? 'del despacho' : 'del contenedor'}
-            </button>
+          {/* 2. Carga -- Packing List (100% de exportación: pallets,
+              inspección de contenedor) o, en venta nacional, su propio
+              Packing List-Nacional más simple. */}
+          <div className="stage-card">
+            <div className="stage-card-title">
+              <span>{esVentaNacional ? 'Packing List-Nacional' : 'Carga (Packing List)'}</span>
+              <StageState
+                state={cargaTerminada ? 'ok' : 'pending'}
+                text={cargaTerminada ? 'Terminado' : cargaDoc ? 'Sin terminar' : 'Sin registrar'}
+              />
+              <span className="stage-card-actions">
+                <button
+                  className={`btn small ${!cargaTerminada && !dispatch ? 'primary' : 'outline'}`}
+                  onClick={esVentaNacional ? onPackingListNacional : onCarga}
+                >
+                  {!cargaDoc ? 'Registrar' : cargaTerminada ? 'Ver' : 'Continuar'}
+                </button>
+              </span>
+            </div>
           </div>
 
-          {/* Registrar carga (Packing List) -- paso previo a Registrar
-              despacho, pero es 100% de exportación (pallets, inspección de
-              contenedor) -- una venta nacional no lo necesita, tiene su
-              propio Packing List-Nacional más simple (abajo), ver
-              PackingListNacionalCaesModal.jsx. */}
-          {!esVentaNacional && (
-            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn small outline" onClick={onCarga}>
-                {!carga ? 'Registrar carga' : carga.status === 'terminado' ? 'Ver carga (Packing List)' : 'Continuar carga'}
-              </button>
-              {carga?.status === 'terminado' && (
-                <span className="tag ok" style={{ fontSize: 11 }}>Cargado</span>
-              )}
-            </div>
-          )}
-          {esVentaNacional && (
-            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span className="tag info" style={{ fontSize: 11 }}>Venta nacional</span>
-              <button className="btn small outline" onClick={onPackingListNacional}>
-                {!packingListNacional ? 'Registrar Packing List-Nacional'
-                  : packingListNacional.status === 'terminado' ? 'Ver Packing List-Nacional' : 'Continuar Packing List-Nacional'}
-              </button>
-              {packingListNacional?.status === 'terminado' && (
-                <span className="tag ok" style={{ fontSize: 11 }}>Cargado</span>
-              )}
+          {/* 3. Control de Unidad de Transporte (solo CAES) -- aplica a
+              Nacional y Exportación; sin estado "terminado", siempre se
+              puede seguir agregando. */}
+          {tieneControlTransporte && (
+            <div className="stage-card">
+              <div className="stage-card-title">
+                <span>Control de unidad de transporte</span>
+                {transportCount != null && (
+                  <StageState
+                    state={transportCount > 0 ? 'ok' : 'pending'}
+                    text={transportCount > 0 ? `${transportCount} tramo${transportCount === 1 ? '' : 's'}` : 'Sin registro'}
+                  />
+                )}
+                {transportCount > 0 && grTranspPendientes > 0 && (
+                  <StageState state="pending" text={`GR transportista pendiente${grTranspPendientes > 1 ? ` (${grTranspPendientes})` : ''}`} />
+                )}
+                <span className="stage-card-actions">
+                  <button className="btn small outline" onClick={onControlTransporte}>
+                    {transportCount > 0 ? 'Ver' : 'Registrar'}
+                  </button>
+                </span>
+              </div>
             </div>
           )}
 
-          {/* Control de Unidad de Transporte (CUT) -- aplica a Nacional Y
-              Exportación (un mismo camión/tramo real se inspecciona igual
-              en los dos casos), ver TransportUnitControlsCaesModal.jsx. Sin
-              estado de "terminado" (a diferencia de Packing List) -- es una
-              lista abierta de 0 a N controles, siempre se puede seguir
-              agregando. */}
-          {!!COOPERATIVE?.features?.ventaNacionalExportacion && (
-            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn small outline" onClick={onControlTransporte}>Control de Unidad de Transporte</button>
+          {/* 4. Despacho */}
+          <div className="stage-card">
+            <div className="stage-card-title">
+              <span>Despacho</span>
+              {dispatch && <StageState state="ok" text="Registrado" />}
+              {dispatch && <AuditStamp row={dispatch} />}
+              <span className="stage-card-actions">
+                <button className={`btn small ${!dispatch && cargaTerminada ? 'primary' : 'outline'}`} onClick={onDispatch}>
+                  {dispatch ? 'Editar' : 'Registrar despacho'}
+                </button>
+              </span>
             </div>
-          )}
+            {dispatch && (
+              <Facts items={[
+                <><strong>{Number(dispatch.total_loaded_kg).toLocaleString('es-PE', { maximumFractionDigits: 2 })} kg</strong></>,
+                <><strong>{formatDate(dispatch.dispatch_date)}</strong></>,
+                // El sello es del contenedor marítimo: no aplica a un despacho nacional.
+                !esVentaNacional && dispatch.seal_verified && <strong className="fact-ok">sello verificado</strong>,
+              ]} />
+            )}
+          </div>
 
-          {/* Órdenes dentro del contenedor */}
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#000', marginBottom: 6 }}>
-              Órdenes ({orders.length})
-            </div>
+          {/* Órdenes dentro del contenedor/despacho */}
+          <div className="container-orders">
             {orders.map(o => {
               const batches = o.plant_production_batches ?? []
               const oKg = batches.reduce((s, b) => s + loteKg(b), 0)
               return (
-                <div key={o.id} style={{ background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 10px', marginBottom: 4, fontSize: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <OrderNumberField order={o} onSaved={onReload} />
-                      <span style={{ color: 'var(--muted)' }}>{oKg.toFixed(0)} kg</span>
-                    </span>
-                    <button
-                      className="btn small outline"
-                      style={{ fontSize: 11, padding: '2px 8px' }}
-                      disabled={!!dispatch}
-                      title={dispatch ? 'Este contenedor ya tiene despacho registrado -- no se puede reabrir' : undefined}
-                      onClick={() => handleReopenOrderClick(o)}
-                    >
-                      Reabrir
-                    </button>
-                  </div>
-                  <div style={{ marginTop: 2 }}>{o.market} · {batches.length} {LOTE_LABEL_LOWER}(s)</div>
+                <div key={o.id} className="container-order-row">
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <OrderNumberField order={o} onSaved={onReload} />
+                    <InternalContainerField order={o} onSaved={onReload} />
+                    <span className="muted small">{o.market} · {batches.length} {LOTE_LABEL_LOWER}(s) · {oKg.toFixed(0)} kg</span>
+                  </span>
+                  {/* Despachado: ya salió, no se puede reabrir -- el botón ni
+                      se muestra (antes quedaba desactivado ocupando lugar). */}
+                  {!dispatch && (
+                    <button className="btn small outline" onClick={() => handleReopenOrderClick(o)}>Reabrir</button>
+                  )}
                 </div>
               )
             })}
             {reopenError && (
-              <p style={{ color: '#dc2626', fontSize: 12, margin: '6px 0 0', fontWeight: 600 }}>{reopenError}</p>
+              <p style={{ color: 'var(--danger)', fontSize: 12, margin: '6px 0 0', fontWeight: 600 }}>{reopenError}</p>
             )}
           </div>
-
-          {/* Despacho */}
-          {dispatch ? (
-            <div style={{ marginTop: 8, padding: '6px 10px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, fontSize: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 2 }}>Despacho registrado</div>
-              <div>{dispatch.total_loaded_kg} kg · {formatDate(dispatch.dispatch_date)}</div>
-              {dispatch.seal_verified && <div style={{ color: 'var(--success)', fontWeight: 600 }}>Sello verificado</div>}
-              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                <button className="btn small outline" style={{ fontSize: 11, padding: '2px 8px' }} onClick={onDispatch}>
-                  Editar despacho
-                </button>
-                <button className="btn small outline" style={{ fontSize: 11, padding: '2px 8px' }} onClick={onOrdenSalidaPdf}>
-                  Orden de Salida (PDF)
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ marginTop: 8 }}>
-              <button className="btn small primary" onClick={onDispatch}>Registrar despacho</button>
-            </div>
-          )}
-
-          <footer style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn small outline" onClick={onInforme}>Ver informe completo</button>
-            <button className="btn small outline" onClick={onDocumentos}>Documentos de planta</button>
-            {/* Solo una vez despachado -- antes de eso la trazabilidad del
-                contenedor todavía puede cambiar (lotes, materia prima). */}
-            {dispatch && (
-              <button
-                className="btn small outline"
-                style={{ fontWeight: 600, color: '#166534', borderColor: 'var(--success)', background: '#f0fdf4' }}
-                onClick={onResumenTrazabilidad}
-              >
-                Resumen de trazabilidad
-              </button>
-            )}
-          </footer>
         </>
       )}
       {confirmDialog}

@@ -1,11 +1,11 @@
-import { PRINT_STYLES, fmtDate, fmtDateTime, buildFirmasHTML } from './shared'
+import { fmtDate } from './shared'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FSEA  = 'FSEA'
 export const FORMAT_TITLE_FSEA = 'FORMATO DE SEGUIMIENTO DE ENFERMEDADES Y ACCIDENTES'
 
-export function buildPrintHTMLFsea(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, incidents, firmantes) {
-  const firmasHTML  = buildFirmasHTML(firmantes)
-  const emisionDate = emittedAt ? fmtDateTime(emittedAt) : '—'
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFseaBodyHTML(incidents) {
 
   const getActions = (inc) => {
     const acts = []
@@ -33,24 +33,7 @@ export function buildPrintHTMLFsea(cooperative, formatCode, moduleName, dateFrom
   const totalCert    = incidents.filter(i => i.certificate_presented).length
   const totalRetorno = incidents.filter(i => i.return_date).length
 
-  return `<!DOCTYPE html><html lang="es">
-<head><meta charset="UTF-8"><title>${FORMAT_TITLE_FSEA}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase">${cooperative?.name ?? ''}</div>
-      <div style="font-size:14px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FSEA}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-    </div>
-  </div>
-  <div style="margin-top:10px;overflow-x:auto">
+  return `  <div style="margin-top:10px;overflow-x:auto">
     <table class="formato-table">
       <thead>
         <tr>
@@ -66,7 +49,40 @@ export function buildPrintHTMLFsea(cooperative, formatCode, moduleName, dateFrom
     <span><strong>Total incidentes:</strong> ${incidents.length}</span>
     <span><strong>Con certificado médico:</strong> <strong>${totalCert}</strong></span>
     <span><strong>Con retorno registrado:</strong> <strong>${totalRetorno}</strong></span>
-  </div>
-  <div class="formato-firmas">${firmasHTML}</div>
-</body></html>`
+  </div>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, los incidentes del MES (o meses) de producción de los lotes de
+// campo de la orden.
+export function fetchFseaOrdenData(cooperative, order) {
+  return fetchCampoModuloRecords(cooperative, order, {
+    table: 'health_incidents',
+    select: `id, registration_date, employee_name, work_area, symptoms_description,
+      action_rest, action_medical_attention, action_relocation, action_medication, action_other, other_action_detail,
+      return_date, certificate_presented`,
+    dateCol: 'registration_date',
+    mode: 'mes',
+  })
+}
+
+export function fseaOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fsea', title: FORMAT_TITLE_FSEA, certNames: data.certNames, firmantes,
+    body: campoModulosBodyHTML(data, m => buildFseaBodyHTML(m.records), 'Sin enfermedades ni accidentes registrados en el período.'),
+  })
+}
+
+export function fseaOrdenExcel(cooperative, order, containerNumber, data) {
+  const acciones = inc => [
+    inc.action_rest && 'Descanso', inc.action_medical_attention && 'Atención médica', inc.action_relocation && 'Reubicación',
+    inc.action_medication && 'Medicación', inc.action_other && (inc.other_action_detail ? `Otro: ${inc.other_action_detail}` : 'Otro'),
+  ].filter(Boolean).join(', ')
+  const rows = [...campoExcelHeader(order, data.certNames, FORMAT_TITLE_FSEA),
+    ['Módulo', 'Fecha', 'Empleado/a', 'Área de trabajo', 'Síntomas / Enfermedad', 'Acciones tomadas', 'Retorno al trabajo', 'Certificado médico']]
+  for (const m of data.modulos) for (const inc of m.records) {
+    rows.push([m.name, inc.registration_date, inc.employee_name ?? '', inc.work_area ?? '', inc.symptoms_description ?? '',
+      acciones(inc), inc.return_date ?? '', inc.certificate_presented ? 'Sí' : 'No'])
+  }
+  writeCampoExcel('fsea', order, containerNumber, [['Enfermedades y accidentes', rows]])
 }

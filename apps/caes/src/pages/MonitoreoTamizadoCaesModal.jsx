@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
@@ -6,6 +7,8 @@ import { loteLabel } from '@panela/core/lib/loteHelpers'
 import { SIEVE_CHECK_ITEMS } from '../lib/formatos/monitoreoTamizadoCaes'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 import { useConfirm } from '@panela/core/hooks/useConfirm'
 
@@ -50,14 +53,17 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
   const [error, setError] = useState('')
   const { confirm, dialog: confirmDialog } = useConfirm()
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_sieve_monitoring_caes')
-      .select('id, monitoring_date, sin_abolladuras, sin_fisuras, sin_desgaste, sin_deformaciones, sin_obstrucciones, hubo_desviacion, causa_raiz, acciones_correctivas, registered_by:web_users!psmc_created_by_fkey ( first_name, last_name )')
+      .select('id, monitoring_date, sin_abolladuras, sin_fisuras, sin_desgaste, sin_deformaciones, sin_obstrucciones, hubo_desviacion, causa_raiz, acciones_correctivas, audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!psmc_created_by_fkey ( first_name, last_name )')
       .eq('plant_batch_id', plantBatch.id)
       .order('monitoring_date', { ascending: false })
     setRows(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -112,6 +118,7 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -138,6 +145,7 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
         .delete()
         .eq('id', r.id)
       if (delErr) throw new Error(delErr.message)
+      toast.success('Registro eliminado')
       await loadHistory()
     } catch (err) {
       setError(err.message ?? 'Error al eliminar el registro')
@@ -153,11 +161,13 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
           {view === 'history' ? (
             <>
               <h3 style={{ margin: '0 0 4px' }}>Monitoreo y Verificación del Tamizado</h3>
-              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)} · {plantBatch.brand}</p>
+              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)}{plantBatch.brand ? ` · ${plantBatch.brand}` : ''}</p>
               <button className="btn small primary" style={{ marginBottom: 12 }} onClick={startNew}>+ Nuevo registro</button>
 
               {loadingHistory ? (
                 <SkeletonList count={2} lines={2} />
+              ) : historyError ? (
+                <ErrorState onRetry={loadHistory} />
               ) : rows.length === 0 ? (
                 <EmptyState message="No hay registros de monitoreo del tamizado para este lote aún." />
               ) : (
@@ -177,7 +187,7 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
                           </div>
                         </div>
                         <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
-                          {r.registered_by && `Registrado por: ${r.registered_by.first_name} ${r.registered_by.last_name}`}
+                          <AuditStamp row={r} />
                         </div>
                         {r.hubo_desviacion && r.causa_raiz && <div className="meta" style={{ fontSize: 12 }}>Causa raíz: {r.causa_raiz}</div>}
                       </div>
@@ -189,7 +199,7 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
           ) : (
             <>
               <h3 style={{ margin: '0 0 4px' }}>{editingId ? 'Editar' : 'Nuevo'} registro</h3>
-              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)} · {plantBatch.brand}</p>
+              <p className="muted small" style={{ margin: '0 0 16px' }}>{loteLabel(plantBatch)}{plantBatch.brand ? ` · ${plantBatch.brand}` : ''}</p>
 
               <div className="field" style={{ margin: 0 }}>
                 <label>Fecha</label>
@@ -197,7 +207,6 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
               </div>
 
               <h4 style={{ margin: '12px 0 4px' }}>Verificación de Integridad del Tamiz</h4>
-              <p className="muted small" style={{ margin: '0 0 8px' }}>Todos los ítems inician marcados como correcto; desmarque únicamente los que no cumplan.</p>
               <div className="grid" style={{ gap: 8 }}>
                 {SIEVE_CHECK_ITEMS.map(item => {
                   const ok = form[item.code]
@@ -269,7 +278,7 @@ export default function MonitoreoTamizadoCaesModal({ plantBatch, webUser, onClos
               )}
             </>
           )}
-          {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
         </div>
         <div className="modal-actions">
           <button className="btn small" onClick={view === 'form' ? () => setView('history') : onClose} disabled={saving}>

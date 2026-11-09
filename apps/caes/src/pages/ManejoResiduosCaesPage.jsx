@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
 import { useAuthStore } from '@panela/core/store/authStore'
@@ -6,6 +7,8 @@ import { CLASIFICACION_ITEMS } from '../lib/formatos/manejoResiduosCaes'
 import { loadLimpiezaGeneralAreas } from '@panela/core/lib/formConfig'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
+import { toast } from '@panela/core/lib/toast'
 import Icon from '@panela/core/components/Icon'
 
 // Manejo de Residuos (CAESP-PP-HYS-RE-MDR-001) -- SOLO CAES, ver
@@ -79,15 +82,18 @@ export default function ManejoResiduosCaesPage() {
     loadLimpiezaGeneralAreas(COOPERATIVE).then(groups => setAreaOptions(groups.map(g => g.area)))
   }, [])
 
+  // Sin esto, un historial que no cargó se veía igual que uno vacío.
+  const [historyError, setHistoryError] = useState('')
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true)
-    const { data } = await supabase
+    const { data, error: historyErr } = await supabase
       .from('plant_waste_management_caes')
-      .select('id, control_date, control_time, es_organico, es_aprovechable, es_no_aprovechable, es_peligroso, origen_residuo, cantidad_bolsas, registered_by:web_users!pwmc_created_by_fkey ( first_name, last_name )')
+      .select('id, control_date, control_time, es_organico, es_aprovechable, es_no_aprovechable, es_peligroso, origen_residuo, cantidad_bolsas, audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pwmc_created_by_fkey ( first_name, last_name )')
       .eq('cooperative_id', COOPERATIVE.id)
       .order('control_date', { ascending: false })
       .limit(50)
     setRows(data ?? [])
+    setHistoryError(historyErr ? historyErr.message : '')
     setLoadingHistory(false)
   }, [])
 
@@ -144,6 +150,7 @@ export default function ManejoResiduosCaesPage() {
         if (insErr) throw new Error(insErr.message)
       }
 
+      toast.success('Control guardado')
       setView('history')
       await loadHistory()
     } catch (err) {
@@ -164,6 +171,8 @@ export default function ManejoResiduosCaesPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={loadHistory} />
         ) : rows.length === 0 ? (
           <EmptyState message="No hay registros de manejo de residuos aún." />
         ) : (
@@ -185,7 +194,7 @@ export default function ManejoResiduosCaesPage() {
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     {clasificaciones.length > 0 && `${clasificaciones.join(', ')} · `}
                     {(r.origen_residuo ?? []).length > 0 && `${r.origen_residuo.join(', ')} · `}
-                    {r.registered_by && `Registrado por: ${r.registered_by.first_name} ${r.registered_by.last_name}`}
+                    <AuditStamp row={r} />
                   </div>
                 </div>
               )
@@ -283,7 +292,7 @@ export default function ManejoResiduosCaesPage() {
         </div>
       </div>
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

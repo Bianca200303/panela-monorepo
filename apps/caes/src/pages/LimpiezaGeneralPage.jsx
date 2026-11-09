@@ -1,4 +1,5 @@
 import { useState, useEffect, Fragment } from 'react'
+import AuditStamp from '@panela/core/components/AuditStamp'
 import { COOPERATIVE } from '../lib/config'
 import { useGridControl } from '@panela/core/hooks/useGridControl'
 import { useMonthlyGridNavigation } from '@panela/core/hooks/useMonthlyGridNavigation'
@@ -7,6 +8,7 @@ import { TIPO_LIMPIEZA_LABELS, PRODUCTO_LABELS } from '../lib/formatos/limpiezaG
 import { MONTH_NAMES, getCoopCode } from '@panela/core/lib/formatos/shared'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
 import MonthArrowSelect from '@panela/core/components/MonthArrowSelect'
 import PeriodExistsBanner from '@panela/core/components/PeriodExistsBanner'
 
@@ -27,8 +29,8 @@ function nextStatus(current) {
 }
 
 function cellStyle(status) {
-  if (status === 'correcto') return { color: '#166534', background: '#f0fdf4' }
-  if (status === 'no_correcto') return { color: '#991b1b', background: '#fef2f2' }
+  if (status === 'correcto') return { color: 'var(--success-text)', background: 'var(--success-bg)' }
+  if (status === 'no_correcto') return { color: 'var(--danger-text)', background: 'var(--danger-bg-soft)' }
   return { color: '#ccc', background: '#fff' }
 }
 
@@ -78,7 +80,7 @@ export default function LimpiezaGeneralPage() {
   useEffect(() => { loadLimpiezaGeneralAreas(COOPERATIVE).then(setAreas) }, [])
 
   const {
-    view, setView, controls, loadingHistory,
+    view, setView, controls, loadingHistory, historyError, reload: reloadHistory,
     editingId, header, updateHeader, updateIdentity,
     cellValue, setCellValue,
     saving, error,
@@ -86,7 +88,7 @@ export default function LimpiezaGeneralPage() {
   } = useGridControl({
     table: 'plant_general_cleaning_controls',
     childTable: 'plant_general_cleaning_checks',
-    historySelect: 'id, year, month, responsible_person, observations, formato_codigo, plant_general_cleaning_checks ( status ), registered_by:web_users!pgcc_created_by_fkey ( first_name, last_name )',
+    historySelect: 'id, year, month, responsible_person, observations, formato_codigo, plant_general_cleaning_checks ( status ), audit_created_by_name, audit_created_at, audit_updated_by_name, audit_updated_at, registered_by:web_users!pgcc_created_by_fkey ( first_name, last_name )',
     historyOrder: [{ column: 'year', ascending: false }, { column: 'month', ascending: false }],
     emptyHeader: () => {
       const now = new Date()
@@ -163,6 +165,8 @@ export default function LimpiezaGeneralPage() {
 
         {loadingHistory ? (
           <SkeletonList count={3} lines={2} />
+        ) : historyError ? (
+          <ErrorState onRetry={reloadHistory} />
         ) : controls.length === 0 ? (
           <EmptyState message="No hay controles de limpieza registrados aún." />
         ) : (
@@ -185,7 +189,7 @@ export default function LimpiezaGeneralPage() {
                   </div>
                   <div className="meta" style={{ marginTop: 6, fontSize: 12 }}>
                     Responsable: {c.responsible_person ?? '—'}
-                    {c.registered_by && ` · Registrado por: ${c.registered_by.first_name} ${c.registered_by.last_name}`}
+                    <AuditStamp row={c} style={{ marginLeft: 6 }} />
                   </div>
                   {c.observations && <div className="meta" style={{ fontSize: 12 }}>Observaciones: {c.observations}</div>}
                 </div>
@@ -206,11 +210,6 @@ export default function LimpiezaGeneralPage() {
       </div>
 
       <div className="card">
-        {editingId && (
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            Mes y año identifican a este control ya guardado y no se pueden cambiar aquí. Para otro período, vuelva al historial y use "Editar".
-          </p>
-        )}
         <div className="grid" style={{ gap: 8 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>Mes</label>
@@ -251,7 +250,7 @@ export default function LimpiezaGeneralPage() {
           </button>
         )}
         <p className="muted small" style={{ margin: '0 0 8px' }}>
-          Click en cada celda: sin marcar → ✓ correcto → ✗ no correcto → sin marcar. Entre paréntesis, tipo de limpieza (D/G/P) y producto de referencia (C/D/A) de cada ítem.
+          Clic en la celda para cambiar su estado. Entre paréntesis, tipo de limpieza (D/G/P) y producto de referencia (C/D/A) de cada ítem.
         </p>
         <div style={{ overflowX: 'auto' }}>
           <table className="table small" style={{ minWidth: '100%' }}>
@@ -267,7 +266,7 @@ export default function LimpiezaGeneralPage() {
               {areas.map(({ area, items }) => (
                 <Fragment key={area}>
                   <tr>
-                    <td colSpan={days.length + 1} style={{ background: '#f3f4f6', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
+                    <td colSpan={days.length + 1} style={{ background: 'var(--surface-sunken)', fontWeight: 700, fontSize: 12, padding: '4px 6px' }}>{area}</td>
                   </tr>
                   {items.map(item => (
                     <tr key={`${area}-${item.code}`}>
@@ -303,7 +302,7 @@ export default function LimpiezaGeneralPage() {
       </div>
       )}
 
-      {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '10px 0 0' }}>{error}</p>}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
         <button className="btn small" onClick={() => setView('history')} disabled={saving}>Cancelar</button>

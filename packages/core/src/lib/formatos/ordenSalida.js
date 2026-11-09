@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { fetchTramos, summarizeTramos } from './tramos'
 import { supabase } from '../supabase'
 import { loteKg, isOrderNacional } from '../loteHelpers'
 import { PRINT_STYLES, metaRow, transportRow, resolveContainerContext, escapeHtml } from './shared'
@@ -64,18 +65,37 @@ function esOrdenExportacion(cooperative, orders) {
   return !isOrderNacional(cooperative, orders?.[0])
 }
 
-// packingListNacional: registro de plant_packing_list_nacional_caes del
-// contenedor (o null si es Exportación / todavía no se inició) -- de ahí
-// sale la guía de remisión para Nacional, ya no de
-// plant_containers.extra_data (esos campos se eliminaron del formulario de
-// contenedor, ver migración 20260916140000).
-export function buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orders, rows, totals, carga, packingListNacional) {
+// tramos: Controles de Unidad de Transporte del contenedor (CAES). Si hay
+// tramos, las guías (CAES y transportista), la empresa y el conductor salen
+// de ahí -- es el único lugar donde se escriben. Sin tramos (Norandino, que
+// no tiene ese control) se usan los campos del despacho (extra_data).
+function transporteOrdenSalida(extra, tramos) {
+  if (!tramos?.length) {
+    return {
+      guiaLabel: 'Guía Remisión Cliente', guia: extra.guia_remision_cliente,
+      empresa: extra.empresa_transporte, grTransp: extra.guia_remision_transportista, conductor: extra.nombre_conductor,
+    }
+  }
+  const t = summarizeTramos(tramos)
+  const join = (a) => (a.length ? a.join(', ') : null)
+  // La GR de CAES se imprime UNA vez (encabezado), no también en la fila de
+  // transporte de venta nacional.
+  return {
+    guiaLabel: 'Guía de Remisión', guia: join(t.grCaes),
+    empresa: join(t.empresas), grTransp: join(t.grTransp), conductor: join(t.conductores),
+  }
+}
+
+export function buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orders, rows, totals, carga, tramos) {
   const extra = dispatch?.extra_data ?? {}
   const coopName = cooperative?.name ?? ''
   const ruc = cooperative?.ruc
   const saleNumbers = [...new Set((orders ?? []).map(o => o.sale_number).filter(Boolean))]
   const esExportacion = esOrdenExportacion(cooperative, orders)
-  const guiaRemision = packingListNacional?.guia_tramo_interno || packingListNacional?.guia_tramo_final || null
+  const tr = transporteOrdenSalida(extra, tramos)
+  // Precinto de aduana: su propio campo del contenedor (antes se imprimía
+  // "N° Sello" con esta etiqueta, distinto de lo que muestra el Packing List).
+  const precintoAduana = container?.extra_data?.precinto_aduana ?? null
 
   const rowsHTML = rows.map(r => `<tr>
     <td style="text-align:center">${r.n}</td>
@@ -111,7 +131,7 @@ export function buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orde
       ${metaRow('N° de documento', extra.documento_number)}
       ${metaRow('Fecha', dispatch?.dispatch_date ? new Date(`${dispatch.dispatch_date}T00:00:00`).toLocaleDateString('es-PE') : '—')}
       ${metaRow('Vendedor / Exportador', coopName)}
-      ${metaRow('Guía Remisión Cliente', extra.guia_remision_cliente)}
+      ${metaRow(tr.guiaLabel, tr.guia)}
       ${metaRow('Autorizado por', extra.autorizado_por)}
       ${metaRow('Destino / Puerto', container?.destination_port)}
     </div>
@@ -125,11 +145,11 @@ export function buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orde
     <div style="font-size:11px;font-weight:700;padding:5px 8px;text-transform:uppercase;border-bottom:1px solid #333">Control y verificación de transporte</div>
     <table class="formato-table" style="width:100%;margin-top:0;border-top:none">
       <tbody>
-        ${transportRow(['Empresa de transporte', extra.empresa_transporte], ['G.R transportista', extra.guia_remision_transportista], ['Nombre de conductor', extra.nombre_conductor])}
+        ${transportRow(['Empresa de transporte', tr.empresa], ['G.R transportista', tr.grTransp], ['Nombre de conductor', tr.conductor])}
         ${esExportacion
           ? transportRow(['N° Contenedor', container?.container_number], ['N° Booking', container?.booking_number], ['Certificación del producto', totals.certs])
-          : transportRow(['Guía de Remisión', guiaRemision], ['Certificación del producto', totals.certs])}
-        ${transportRow([cooperative?.features?.precintoPropioLabel ?? 'Precinto propio', carga?.precinto_norandino], ['Precinto de Aduana', container?.seal_number], ['Otro precinto', extra.otro_precinto])}
+          : transportRow(['Certificación del producto', totals.certs])}
+        ${transportRow([cooperative?.features?.precintoPropioLabel ?? 'Precinto propio', carga?.precinto_norandino], ['Precinto de Aduana', precintoAduana], ['Otro precinto', extra.otro_precinto])}
       </tbody>
     </table>
   </div>
@@ -171,37 +191,36 @@ export function buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orde
 </html>`
 }
 
-export function ordenSalidaPdf(cooperative, container, dispatch, orders, rows, totals, carga, packingListNacional) {
-  return buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orders, rows, totals, carga, packingListNacional)
+export function ordenSalidaPdf(cooperative, container, dispatch, orders, rows, totals, carga, tramos) {
+  return buildPrintHTMLOrdenSalida(cooperative, container, dispatch, orders, rows, totals, carga, tramos)
 }
 
-export function ordenSalidaExcel(cooperative, container, dispatch, orders, rows, totals, carga, packingListNacional) {
+export function ordenSalidaExcel(cooperative, container, dispatch, orders, rows, totals, carga, tramos) {
   const extra = dispatch?.extra_data ?? {}
   const esExportacion = esOrdenExportacion(cooperative, orders)
-  const guiaRemision = packingListNacional?.guia_tramo_interno || packingListNacional?.guia_tramo_final || ''
+  const tr = transporteOrdenSalida(extra, tramos)
+  const precintoAduana = container?.extra_data?.precinto_aduana ?? ''
   const aoa = [
     ['ORDEN DE SALIDA DE PRODUCTOS'],
     ['RUC:', cooperative?.ruc ?? ''],
     ['N° de documento:', extra.documento_number ?? ''],
     ['Fecha:', dispatch?.dispatch_date ?? ''],
-    ['Guía Remisión Cliente:', extra.guia_remision_cliente ?? ''],
+    [`${tr.guiaLabel}:`, tr.guia ?? ''],
     ['Autorizado por:', extra.autorizado_por ?? ''],
     ['Destino / Puerto:', container?.destination_port ?? ''],
     ['Temperatura al cargar (°C) [informativo]:', dispatch?.temperature_at_load ?? ''],
     ['Humedad relativa al cargar (%) [informativo]:', dispatch?.humidity_at_load ?? ''],
     [],
-    ['Empresa de transporte:', extra.empresa_transporte ?? ''],
-    ['G.R. transportista:', extra.guia_remision_transportista ?? ''],
-    ['Nombre de conductor:', extra.nombre_conductor ?? ''],
+    ['Empresa de transporte:', tr.empresa ?? ''],
+    ['G.R. transportista:', tr.grTransp ?? ''],
+    ['Nombre de conductor:', tr.conductor ?? ''],
     ...(esExportacion ? [
       ['N° Contenedor:', container?.container_number ?? ''],
       ['N° Booking:', container?.booking_number ?? ''],
-    ] : [
-      ['Guía de Remisión:', guiaRemision],
-    ]),
+    ] : []),
     ['Certificación:', totals.certs ?? ''],
     [`${cooperative?.features?.precintoPropioLabel ?? 'Precinto propio'}:`, carga?.precinto_norandino ?? ''],
-    ['Precinto de Aduana:', container?.seal_number ?? ''],
+    ['Precinto de Aduana:', precintoAduana],
     ['Otro precinto:', extra.otro_precinto ?? ''],
     [],
     ['N°', 'Referencia (N° Venta, OP)', 'Especificaciones del producto', 'Cantidad', 'Unidad', 'Pallets', 'QQ', 'TM', 'Total Kg Neto'],
@@ -234,19 +253,16 @@ export async function fetchOrdenSalidaQuickDoc(cooperative, order) {
     .select('*')
     .eq('container_id', container.id)
     .maybeSingle()
-  // Solo aplica a Nacional (ver isOrderNacional) -- para Exportación esta
-  // tabla nunca tiene fila para este contenedor, queda null sin pedirlo.
-  const { data: packingListNacional } = isOrderNacional(cooperative, ordersInContainer[0])
-    ? await supabase.from('plant_packing_list_nacional_caes').select('*').eq('container_id', container.id).maybeSingle()
-    : { data: null }
+  // Tramos (Control de Unidad de Transporte): solo existen en CAES.
+  const tramos = cooperative?.features?.ventaNacionalExportacion ? await fetchTramos(container.id) : []
   const { rows, totals } = await fetchOrdenSalidaRows(ordersInContainer)
-  return { container, dispatch, orders: ordersInContainer, rows, totals, carga, packingListNacional }
+  return { container, dispatch, orders: ordersInContainer, rows, totals, carga, tramos }
 }
 
 export function ordenSalidaQuickDocPdf(cooperative, order, containerNumber, data) {
-  return ordenSalidaPdf(cooperative, data.container, data.dispatch, data.orders, data.rows, data.totals, data.carga, data.packingListNacional)
+  return ordenSalidaPdf(cooperative, data.container, data.dispatch, data.orders, data.rows, data.totals, data.carga, data.tramos)
 }
 
 export function ordenSalidaQuickDocExcel(cooperative, order, containerNumber, data) {
-  ordenSalidaExcel(cooperative, data.container, data.dispatch, data.orders, data.rows, data.totals, data.carga, data.packingListNacional)
+  ordenSalidaExcel(cooperative, data.container, data.dispatch, data.orders, data.rows, data.totals, data.carga, data.tramos)
 }

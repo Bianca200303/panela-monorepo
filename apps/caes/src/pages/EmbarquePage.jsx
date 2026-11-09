@@ -1,4 +1,7 @@
-import { useState, useEffect } from 'react'
+import { toast } from '@panela/core/lib/toast'
+import { trackAction } from '@panela/core/lib/usage'
+import { AUDIT_COLUMNS } from '@panela/core/lib/audit'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { supabase } from '@panela/core/lib/supabase'
 import { COOPERATIVE } from '../lib/config'
@@ -8,9 +11,10 @@ import DynamicForm, { validateDynamicForm, getInitialValues } from '@panela/core
 import { downloadPdfDocument } from '@panela/core/lib/pdfDownload'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
 import { fetchOrdenSalidaRows, ordenSalidaPdf } from '@panela/core/lib/formatos/ordenSalida'
-import { QUICK_DOCS } from '../lib/formatos'
+import { fetchTramos } from '@panela/core/lib/formatos/tramos'
+import { QUICK_DOCS, FIELD_DOCS } from '../lib/formatos'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
-import { loteKg, loteLabel, loteBunques, isOrderNacional, BUNQUE_ALLOCATIONS_SELECT } from '@panela/core/lib/loteHelpers'
+import { loteKg, loteLabel, isOrderNacional, BUNQUE_ALLOCATIONS_SELECT } from '@panela/core/lib/loteHelpers'
 import { getLoteLabelLower, getLoteLabelPluralLower } from '@panela/core/lib/labels'
 
 import ContainerLoadingModal from '@panela/core/pages/ContainerLoadingModal'
@@ -18,6 +22,7 @@ import PackingListNacionalCaesModal from './PackingListNacionalCaesModal'
 import TransportUnitControlsCaesModal from './TransportUnitControlsCaesModal'
 import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
+import ErrorState from '@panela/core/components/ErrorState'
 import Icon from '@panela/core/components/Icon'
 import SearchFilterBar from '@panela/core/components/SearchFilterBar'
 import QuickDocsModal from '@panela/core/components/QuickDocsModal'
@@ -25,7 +30,6 @@ import OrderNumberField from '@panela/core/components/OrderNumberField'
 import EmbarqueCard from '@panela/core/pages/EmbarqueCard'
 // pendiente de Fase 4 -- todavia vive en el src/ viejo (bucket 3, sin migrar).
 import ContainerCard from '@panela/core/pages/ContainerCard'
-import InformeOrden from '@panela/core/pages/InformeOrden'
 import PdfHeaderModal from '@panela/core/pages/PdfHeaderModal'
 
 // Página de Embarque -- separada de OrdenesPage.jsx (2026-08-01): la orden
@@ -35,7 +39,6 @@ import PdfHeaderModal from '@panela/core/pages/PdfHeaderModal'
 // completadas, sin necesidad de compartir un hook de carga con /ordenes.
 // Ver [[project_separacion_ordenes_embarque]] en memoria para el detalle
 // completo de qué se movió y por qué.
-
 
 // Columnas fijas en la tabla (lo demás va a extra_data)
 const CONTAINER_FIXED_COLS = [
@@ -64,13 +67,21 @@ const DISPATCH_FIXED_COLS = [
 const CAES_EXPORT_ONLY_KEYS = [
   'container_number', 'seal_number', 'precinto_aduana', 'container_size', 'max_capacity_kg',
   'booking_number', 'bill_of_lading', 'shipping_line', 'vessel', 'destination_port',
-  'departure_date', 'estimated_arrival', 'certificado_origen', 'carta_rendimiento_azucar',
+  'departure_date', 'estimated_arrival', 'certificado_origen', 'carta_rendimiento_azucar', 'puerto_salida',
 ]
 
+// Factura comercial y certificado de transacción son opcionales (no se
+// exigen para registrar el contenedor/despacho); se marca en la etiqueta.
+const OPTIONAL_LABEL_KEYS = ['factura_comercial', 'certificado_transaccion']
+const withOptionalLabels = (fields) => fields.map(f =>
+  OPTIONAL_LABEL_KEYS.includes(f.key) && !f.required && !/opcional/i.test(f.label)
+    ? { ...f, label: `${f.label} (opcional)` }
+    : f)
+
 function containerFieldsForOrder(fields, order) {
-  if (!COOPERATIVE?.features?.ventaNacionalExportacion) return fields
-  if (!isOrderNacional(COOPERATIVE, order)) return fields
-  return fields.filter(f => !CAES_EXPORT_ONLY_KEYS.includes(f.key))
+  if (!COOPERATIVE?.features?.ventaNacionalExportacion) return withOptionalLabels(fields)
+  if (!isOrderNacional(COOPERATIVE, order)) return withOptionalLabels(fields)
+  return withOptionalLabels(fields.filter(f => !CAES_EXPORT_ONLY_KEYS.includes(f.key)))
 }
 
 async function generateDispatchCode() {
@@ -92,6 +103,7 @@ export default function EmbarquePage() {
 
   const [orders, setOrders]     = useState([])
   const [loading, setLoading]   = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [kgPerQuintal, setKgPerQuintal] = useState(50)
   const [searchQuery, setSearchQuery]   = useState('')
   const [saving, setSaving] = useState(false)
@@ -101,7 +113,11 @@ export default function EmbarquePage() {
   // lado a lado en la misma pantalla) -- cada una a pantalla completa.
   const [searchParams, setSearchParams] = useSearchParams()
   const [pageTab, setPageTab] = useState(searchParams.get('tab') ?? 'lista')
+  // Despachados: se muestran los más recientes y el resto con "Ver más"
+  // (es una lista que solo crece).
+  const [showAllDone, setShowAllDone] = useState(false)
   function selectPageTab(tab) {
+    setShowAllDone(false)
     setPageTab(tab)
     setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('tab', tab); return next })
   }
@@ -135,11 +151,8 @@ export default function EmbarquePage() {
   const [modalPackingListNacional, setModalPackingListNacional] = useState(null) // container
   // Control de Unidad de Transporte (CAES, Nacional y Exportación)
   const [modalControlTransporte, setModalControlTransporte] = useState(null) // { container, orders }
-
-  // Informe de trazabilidad completa
-  const [informeOrden, setInformeOrden]     = useState(null)
-  const [informeData, setInformeData]       = useState(null)
-  const [informeLoading, setInformeLoading] = useState(false)
+  // Sube al cerrar ese modal: ContainerCard vuelve a contar sus controles.
+  const [controlsVersion, setControlsVersion] = useState(0)
 
   // Documentos rápidos por orden
   const [modalQuickDocs, setModalQuickDocs] = useState(null) // { order, containerNumber }
@@ -160,15 +173,15 @@ export default function EmbarquePage() {
   const loadData = async () => {
     setLoading(true)
 
-    const { data: ordersRes } = await supabase
+    const { data: ordersRes, error: ordersErr } = await supabase
       .from('plant_orders')
       .select(`
-        id, order_code, market, total_kg, status, notes, created_at, container_id, sale_number, sale_type,
+        id, order_code, market, total_kg, status, notes, created_at, container_id, sale_number, sale_type, ${AUDIT_COLUMNS},
         product, client_id, client_order_number, internal_container_number,
         tamizado_fecha_inicio, tamizado_fecha_fin, envasado_fecha_inicio, envasado_fecha_fin, fecha_envio,
         plant_clients ( id, name, code ),
         plant_production_batches (
-          id, order_id, batch_code, brand, client_batch_number, boxes_count, packaging_type, packaging_count, packaging_kg,
+          id, order_id, batch_code, brand, client_batch_number, boxes_count, packaging_type, packaging_count, packaging_kg, ${AUDIT_COLUMNS},
           product_catalog_id,
           plant_product_catalog ( description ),
           status, notes, description, best_before_date, pallet_count, tamizada_kg,
@@ -188,6 +201,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       .eq('status', 'completado')
       .order('created_at', { ascending: false })
 
+    // Antes un fallo se veía como "no hay órdenes listas para embarque".
+    if (ordersErr) {
+      setLoadError(ordersErr.message)
+      setLoading(false)
+      return
+    }
+    setLoadError('')
     const ordersArr = ordersRes ?? []
 
     // Contenedores, despachos, cargas y Packing List-Nacional
@@ -248,6 +268,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         .update({ status: 'en_proceso', container_id: null })
         .eq('id', orderId)
       if (updErr) throw new Error(updErr.message)
+      toast.success('Orden reabierta', 'Volvió a "En proceso" en Órdenes.')
+      trackAction('reabrir_orden')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -339,6 +361,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       }
 
       setModalContainer(null)
+      toast.success('Contenedor guardado')
+      trackAction('asignar_contenedor')
       loadData()
     } catch (err) {
       setError(err.message)
@@ -372,7 +396,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
     }
     setDispatchItems(batches.map(b => ({
       plant_batch_id: b.id,
-      label: `${loteLabel(b)} · ${b.brand}`,
+      label: `${loteLabel(b)}${b.brand ? ` · ${b.brand}` : ''}`,
       // Prellenado con lo ya guardado (si se edita) o con lo planificado --
       // editable igual, pero evita retipear a mano un total que ya se sabe.
       quantity_kg: String(savedItemsMap[b.id] ?? loteKg(b) ?? 0),
@@ -470,264 +494,14 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         .eq('id', container.id)
 
       setModalDispatch(null)
+      toast.success('Despacho registrado')
+      trackAction('registrar_despacho')
       loadData()
     } catch (err) {
       setError(err.message)
     } finally {
       setSaving(false)
     }
-  }
-
-  // ── Informe completo ────────────────────────────────────────────────────────
-
-  const loadInforme = async (order) => {
-    setInformeOrden(order)
-    setInformeLoading(true)
-    setInformeData(null)
-
-    const exitItemIds = (order.plant_production_batches ?? [])
-      .flatMap(pb => loteBunques(pb).flatMap(b => (b.plant_homogenization_inputs ?? []).map(h => h.source_exit_item_id)))
-      .filter(Boolean)
-
-    // Documentos de planta de envasado -- los mismos 14 que en "Documentos"
-    // (QUICK_DOCS), a nivel de ORDEN completa (no por lote). Se piden todos
-    // de una para poder mostrar el "Estado de documentos" al toque y no
-    // depender de que el usuario abra cada uno para saber si hay datos. Cada
-    // fetch puede fallar solo (ej. Orden de Salida/Packing List si todavía
-    // no hay despacho/carga) -- no es fatal para el resto del informe.
-    const plantDocsEntries = await Promise.all(QUICK_DOCS.map(async d => {
-      try {
-        const docData = await d.fetchData(order, kgPerQuintal)
-        return [d.key, { data: docData, error: null }]
-      } catch (err) {
-        return [d.key, { data: null, error: err.message }]
-      }
-    }))
-    const plantDocsMap = Object.fromEntries(plantDocsEntries)
-
-    if (exitItemIds.length === 0) {
-      setInformeData({ exitItemsMap: {}, evalMap: {}, recMap: {}, tempsMap: {}, phMap: {}, certsMap: {}, workersMap: {}, stowageMap: {}, fieldDocsMap: {}, fcpoMap: {}, chlorineByModuleDate: {}, fcclrByModule: {}, cleaningByModuleDate: {}, fldhByModule: {}, returnsByBatch: {}, fqdMap: {}, plantDocsMap })
-      setInformeLoading(false)
-      return
-    }
-
-    // Primera ronda: exit_items directo (fuente principal de trazabilidad) + calidad + recepción
-    const [exitItemsRes, evalsRes, recItemsRes] = await Promise.all([
-      supabase
-        .from('exit_items')
-        .select(`
-          id, quantity_kg, item_document_number,
-          exit_registrations ( id, exit_code, exit_date, document_number, destination ),
-          production_batches (
-            id, batch_code, harvest_date, process_date, cane_kg, juice_liters, panela_kg, confitillo_kg,
-            cachaza_percentage, efficiency_percentage, porcentaje_extraccion, cane_density, observations,
-            producers ( first_name, last_name, dni, appagrop_code, is_member, coop_modules ( id, name ) ),
-            plots ( name, code )
-          )
-        `)
-        .in('id', exitItemIds)
-        .eq('cooperative_id', COOPERATIVE.id),
-      supabase
-        .from('quality_evaluations')
-        .select('exit_item_id, humidity_pct, impurities_pct, color, sack_condition, appearance, notes')
-        .in('exit_item_id', exitItemIds)
-        .eq('cooperative_id', COOPERATIVE.id),
-      supabase
-        .from('exit_reception_items')
-        .select('exit_item_id, quantity_kg_sent, quantity_kg_received, discrepancy_reason, exit_receptions ( received_at, notes, status )')
-        .in('exit_item_id', exitItemIds),
-    ])
-
-    const exitItemsMap = {}
-    ;(exitItemsRes.data ?? []).forEach(ei => { exitItemsMap[ei.id] = ei })
-
-    const evalMap = {}
-    ;(evalsRes.data ?? []).forEach(e => { evalMap[e.exit_item_id] = e })
-
-    const recMap = {}
-    ;(recItemsRes.data ?? []).forEach(r => { recMap[r.exit_item_id] = r })
-
-    // IDs únicos para segunda ronda — vienen de exit_items (no depende de calidad)
-    const prodBatchIds = [...new Set(
-      Object.values(exitItemsMap).map(ei => ei.production_batches?.id).filter(Boolean)
-    )]
-    const exitRegIds = [...new Set(
-      Object.values(exitItemsMap).map(ei => ei.exit_registrations?.id).filter(Boolean)
-    )]
-    // Módulos y fechas de proceso para consultas de cloro
-    const moduleIds = [...new Set(
-      Object.values(exitItemsMap).map(ei => ei.production_batches?.producers?.coop_modules?.id).filter(Boolean)
-    )]
-    const processDates = [...new Set(
-      Object.values(exitItemsMap).map(ei => ei.production_batches?.process_date).filter(Boolean)
-    )]
-
-    // Segunda ronda: datos de campo en paralelo
-    const [tempsRes, phRes, certsRes, workersRes, stowageRes, formatsRes, fcpoRes, chlorineRes, fcclrRes, cleaningRes, fldhRes, returnsRes] = await Promise.all([
-      prodBatchIds.length > 0
-        ? supabase.from('batch_temperatures')
-            .select('production_batch_id, temperature, sequence_number')
-            .in('production_batch_id', prodBatchIds)
-            .eq('cooperative_id', COOPERATIVE.id)
-            .order('sequence_number')
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('batch_ph_controls')
-            .select('production_batch_id, record_date, ph_initial, ph_final, regulator_type, regulator_quantity_value, regulator_quantity_unit, brix, corrective_action')
-            .in('production_batch_id', prodBatchIds)
-            .eq('cooperative_id', COOPERATIVE.id)
-            .order('record_date')
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('production_batch_certs')
-            .select('production_batch_id, batch_certs ( name )')
-            .in('production_batch_id', prodBatchIds)
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('worker_controls')
-            .select('id, production_batch_id, work_area, observations, created_at, created_by, worker_control_items(worker_name, uniform_complete, no_makeup, nails_short_clean, nails_no_polish, hands_clean, no_jewelry, hair_covered, no_beard, no_wounds)')
-            .in('production_batch_id', prodBatchIds)
-            .eq('cooperative_id', COOPERATIVE.id)
-            .order('work_area')
-        : { data: [] },
-      exitRegIds.length > 0
-        ? supabase.from('stowage_transport_inspections')
-            .select('id, exit_registration_id, inspection_date, carrier_name, carrier_ruc, carrier_license, vehicle_brand, vehicle_plate, vehicle_condition, has_spare_tire, has_valid_soat, has_technical_review, has_first_aid_kit, has_fire_extinguisher, has_gps, has_cleaning_supplies, floors_clean, walls_clean, ceilings_clean, no_strange_odors, tarp_clean, pallets_clean, sack_clean_condition, sack_tied_condition, observations, formato_codigo, emitted_by_name, emitted_at, firmantes')
-            .in('exit_registration_id', exitRegIds)
-            .eq('cooperative_id', COOPERATIVE.id)
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('formatos_control_mp_ph_lotes')
-            .select('lote_campo_id, formatos_control_mp_ph ( id, formato_codigo, date_from, date_to, emitted_at, emitted_by_name, firmantes, coop_modules ( name ) )')
-            .in('lote_campo_id', prodBatchIds)
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('formatos_control_personal')
-            .select('production_batch_id, formato_codigo, emitted_at, firmantes, status')
-            .in('production_batch_id', prodBatchIds).eq('cooperative_id', COOPERATIVE.id)
-        : { data: [] },
-      moduleIds.length > 0 && processDates.length > 0
-        ? supabase.from('chlorine_residual_controls')
-            .select('id, coop_module_id, control_date, control_time, measurement_point_1, measurement_point_2, corrective_actions, observations, responsible_person')
-            .eq('cooperative_id', COOPERATIVE.id)
-            .in('coop_module_id', moduleIds)
-            .in('control_date', processDates)
-            .order('control_date').order('control_time')
-        : { data: [] },
-      moduleIds.length > 0
-        ? supabase.from('formatos_control_cloro')
-            .select('id, formato_codigo, module_id, date_from, date_to, emitted_at, firmantes, status')
-            .eq('cooperative_id', COOPERATIVE.id)
-            .in('module_id', moduleIds)
-            .eq('status', 'emitted')
-        : { data: [] },
-      moduleIds.length > 0 && processDates.length > 0
-        ? supabase.from('cleaning_disinfections')
-            .select('id, coop_module_id, cleaning_date, cleaning_types, general_observations, cleaning_disinfection_items(area_code)')
-            .eq('cooperative_id', COOPERATIVE.id)
-            .in('coop_module_id', moduleIds)
-            .in('cleaning_date', processDates)
-        : { data: [] },
-      moduleIds.length > 0
-        ? supabase.from('formatos_limpieza_desinfeccion')
-            .select('id, formato_codigo, module_id, date_from, date_to, emitted_at, status')
-            .eq('cooperative_id', COOPERATIVE.id)
-            .in('module_id', moduleIds)
-            .eq('status', 'emitted')
-        : { data: [] },
-      prodBatchIds.length > 0
-        ? supabase.from('product_returns')
-            .select('id, production_batch_id, client_name, return_date, quantity_kg, quantity_sacks, return_reason, observations')
-            .eq('cooperative_id', COOPERATIVE.id)
-            .in('production_batch_id', prodBatchIds)
-            .order('return_date', { ascending: false })
-        : { data: [] },
-    ])
-
-    const tempsMap = {}
-    ;(tempsRes.data ?? []).forEach(t => {
-      if (!tempsMap[t.production_batch_id]) tempsMap[t.production_batch_id] = []
-      tempsMap[t.production_batch_id].push(t)
-    })
-    const phMap = {}
-    ;(phRes.data ?? []).forEach(p => {
-      if (!phMap[p.production_batch_id]) phMap[p.production_batch_id] = []
-      phMap[p.production_batch_id].push(p)
-    })
-    const certsMap = {}
-    ;(certsRes.data ?? []).forEach(c => {
-      if (!certsMap[c.production_batch_id]) certsMap[c.production_batch_id] = []
-      if (c.batch_certs?.name) certsMap[c.production_batch_id].push(c.batch_certs.name)
-    })
-    const workersMap = {}
-    ;(workersRes.data ?? []).forEach(w => {
-      if (!workersMap[w.production_batch_id]) workersMap[w.production_batch_id] = []
-      workersMap[w.production_batch_id].push(w)
-    })
-    const stowageMap = {}
-    ;(stowageRes.data ?? []).forEach(s => { stowageMap[s.exit_registration_id] = s })
-    const fcpoMap = {}
-    ;(fcpoRes.data ?? []).forEach(f => { fcpoMap[f.production_batch_id] = f })
-    const chlorineByModuleDate = {}
-    ;(chlorineRes.data ?? []).forEach(r => {
-      const key = `${r.coop_module_id}_${r.control_date}`
-      if (!chlorineByModuleDate[key]) chlorineByModuleDate[key] = []
-      chlorineByModuleDate[key].push(r)
-    })
-    const fcclrByModule = {}
-    ;(fcclrRes.data ?? []).forEach(f => {
-      if (!fcclrByModule[f.module_id]) fcclrByModule[f.module_id] = []
-      fcclrByModule[f.module_id].push(f)
-    })
-    const cleaningByModuleDate = {}
-    ;(cleaningRes.data ?? []).forEach(r => {
-      const key = `${r.coop_module_id}_${r.cleaning_date}`
-      if (!cleaningByModuleDate[key]) cleaningByModuleDate[key] = []
-      const areas = [...new Set((r.cleaning_disinfection_items ?? []).map(i => i.area_code))]
-      cleaningByModuleDate[key].push({ ...r, areas })
-    })
-    const fldhByModule = {}
-    ;(fldhRes.data ?? []).forEach(f => {
-      if (!fldhByModule[f.module_id]) fldhByModule[f.module_id] = []
-      fldhByModule[f.module_id].push(f)
-    })
-    const returnsByBatch = {}
-    ;(returnsRes.data ?? []).forEach(r => {
-      if (!returnsByBatch[r.production_batch_id]) returnsByBatch[r.production_batch_id] = []
-      returnsByBatch[r.production_batch_id].push(r)
-    })
-    const fqdMap = {}
-    if ((returnsRes.data ?? []).length > 0) {
-      const returnIds = (returnsRes.data ?? []).map(r => r.id)
-      const { data: fqdRes } = await supabase
-        .from('formatos_devoluciones')
-        .select('product_return_id, formato_codigo, emitted_at, firmantes, status')
-        .in('product_return_id', returnIds)
-        .eq('cooperative_id', COOPERATIVE.id)
-      ;(fqdRes ?? []).forEach(f => { fqdMap[f.product_return_id] = f })
-    }
-
-    // fieldDocsMap: formato_id → { id, document_code, emitted_at, formatDetails, coveredBatchIds }
-    const fieldDocsMap = {}
-    ;(formatsRes.data ?? []).forEach(row => {
-      const fmt = row.formatos_control_mp_ph
-      if (!fmt) return
-      if (!fieldDocsMap[fmt.id]) {
-        fieldDocsMap[fmt.id] = {
-          id: fmt.id,
-          document_code: fmt.formato_codigo,
-          emitted_at: fmt.emitted_at,
-          emitted_by_name: fmt.emitted_by_name,
-          formatDetails: { date_from: fmt.date_from, date_to: fmt.date_to, coop_modules: fmt.coop_modules },
-          firmantes: fmt.firmantes ?? [],
-          coveredBatchIds: [],
-        }
-      }
-      fieldDocsMap[fmt.id].coveredBatchIds.push(row.lote_campo_id)
-    })
-
-    setInformeData({ exitItemsMap, evalMap, recMap, tempsMap, phMap, certsMap, workersMap, stowageMap, fieldDocsMap, fcpoMap, chlorineByModuleDate, fcclrByModule, cleaningByModuleDate, fldhByModule, returnsByBatch, fqdMap, plantDocsMap })
-    setInformeLoading(false)
   }
 
   // ── PDF de trazabilidad ─────────────────────────────────────────────────────
@@ -739,7 +513,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
   const handleOrdenSalidaPdf = async (container, dispatch, ordersInContainer) => {
     try {
       const { rows, totals } = await fetchOrdenSalidaRows(ordersInContainer)
-      const html = ordenSalidaPdf(COOPERATIVE, container, dispatch, ordersInContainer, rows, totals, loadingsMap[container.id], packingListsNacionalMap[container.id])
+      const tramos = COOPERATIVE?.features?.ventaNacionalExportacion ? await fetchTramos(container.id) : []
+      const html = ordenSalidaPdf(COOPERATIVE, container, dispatch, ordersInContainer, rows, totals, loadingsMap[container.id], tramos)
       await downloadPdfDocument(html)
     } catch (err) {
       setError(err.message)
@@ -805,6 +580,17 @@ ${BUNQUE_ALLOCATIONS_SELECT}
   const contenedoresCargado    = contenedoresExportacion.filter(c => c.container.status !== 'despachado')
   const contenedoresDespachado = contenedoresExportacion.filter(c => c.container.status === 'despachado')
 
+  // Sin ?tab= en la URL, se abre la primera pestaña con algo pendiente (antes
+  // siempre "Lista para embarque", aunque estuviera vacía). Una sola vez.
+  const autoTabDone = useRef(!!searchParams.get('tab'))
+  useEffect(() => {
+    if (loading || autoTabDone.current) return
+    autoTabDone.current = true
+    if (listaEmbarque.length > 0) return
+    if (COOPERATIVE?.features?.ventaNacionalExportacion && nacionalPreparando.length > 0) setPageTab('nacional')
+    else if (contenedoresCargado.length > 0) setPageTab('contenedor')
+  }, [loading])
+
   // Una sola ContainerCard por cada { container, orders, dispatch, loading }
   // -- se reusa igual en las 4 columnas (Nacional/Exportación × Preparando/
   // Despachado) para no repetir 17 props 4 veces.
@@ -819,7 +605,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         packingListNacional={packingListsNacionalMap[container.id]}
         onCarga={() => setModalCarga({ container, orders: cOrders })}
         onDispatch={() => openModalDispatch(cOrders[0])}
-        onInforme={() => loadInforme(cOrders[0])}
         onDocumentos={() => setModalQuickDocs({ order: cOrders[0], containerNumber: container.container_number })}
         onResumenTrazabilidad={() => setModalQuickDocs({ order: cOrders[0], containerNumber: container.container_number, initialDocKey: 'resumen_trazabilidad', initialBatch: cOrders[0]?.plant_production_batches?.[0] })}
         onOrdenSalidaPdf={() => handleOrdenSalidaPdf(container, dispatch, cOrders)}
@@ -828,32 +613,48 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         onReopenOrder={handleReopenOrder}
         onReload={loadData}
         onEditarContenedor={() => openModalContainer(cOrders[0])}
+        controlsVersion={controlsVersion}
       />
     )
   }
 
-  // Columna con encabezado + contador + lista de ContainerCard -- reusada
-  // tanto en "Despachos nacionales" como en "En contenedor".
-  function ContainerColumn({ title, items, emptyMessage, tagClass }) {
+  // Una sola lista a todo el ancho (antes 2 columnas lado a lado que dejaban
+  // media pantalla vacía): primero lo que falta despachar, después lo ya
+  // despachado (más reciente primero, los más viejos detrás de "Ver más").
+  const DONE_LIMIT = 10
+  const renderContainerSections = (pendingItems, doneItems, emptyMessage) => {
+    if (pendingItems.length === 0 && doneItems.length === 0) {
+      return <EmptyState message={searchNeedle ? 'Ningún contenedor coincide con la búsqueda.' : emptyMessage} />
+    }
+    const doneSorted = [...doneItems].sort((a, b) => (b.dispatch?.dispatch_date ?? '').localeCompare(a.dispatch?.dispatch_date ?? ''))
+    const doneVisible = showAllDone ? doneSorted : doneSorted.slice(0, DONE_LIMIT)
     return (
-      <div>
-        <h3 style={{ margin: '0 0 12px' }}>
-          {title}
-          <span className={tagClass} style={{ marginLeft: 8 }}>{items.length}</span>
-        </h3>
-        {items.length === 0 ? (
-          <EmptyState message={searchNeedle ? 'Ningún contenedor coincide con la búsqueda.' : emptyMessage} />
-        ) : (
-          <div className="list">{items.map(renderContainerCard)}</div>
+      <>
+        {pendingItems.length > 0 && (
+          <section className="embarque-section">
+            <h3 className="embarque-section-title">Por despachar <span className="tab-count">{pendingItems.length}</span></h3>
+            <div className="list">{pendingItems.map(renderContainerCard)}</div>
+          </section>
         )}
-      </div>
+        {doneItems.length > 0 && (
+          <section className="embarque-section">
+            <h3 className="embarque-section-title">Despachados <span className="tab-count">{doneItems.length}</span></h3>
+            <div className="list">{doneVisible.map(renderContainerCard)}</div>
+            {doneSorted.length > DONE_LIMIT && !showAllDone && (
+              <button className="btn small outline" style={{ marginTop: 8 }} onClick={() => setShowAllDone(true)}>
+                Ver {doneSorted.length - DONE_LIMIT} más
+              </button>
+            )}
+          </section>
+        )}
+      </>
     )
   }
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>Embarque</h2>
+        <h2 style={{ margin: 0 }}>Despacho / Embarque</h2>
       </div>
 
       {!loading && (
@@ -867,28 +668,27 @@ ${BUNQUE_ALLOCATIONS_SELECT}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <button className={`btn small ${pageTab === 'lista' ? 'primary' : 'outline'}`} onClick={() => selectPageTab('lista')}>
           Lista para embarque
-          {pageTab === 'lista'
-            ? <span style={{ marginLeft: 6, opacity: 0.85 }}>({listaEmbarque.length})</span>
-            : <span className="tag info" style={{ marginLeft: 6 }}>{listaEmbarque.length}</span>}
+          {/* Sin número mientras carga: un "0" provisorio parece un dato real. */}
+          {!loading && <span className="tab-count">{listaEmbarque.length}</span>}
         </button>
         {COOPERATIVE?.features?.ventaNacionalExportacion && (
           <button className={`btn small ${pageTab === 'nacional' ? 'primary' : 'outline'}`} onClick={() => selectPageTab('nacional')}>
             Despachos nacionales
-            {pageTab === 'nacional'
-              ? <span style={{ marginLeft: 6, opacity: 0.85 }}>({despachosNacionales.length})</span>
-              : <span className="tag ok" style={{ marginLeft: 6 }}>{despachosNacionales.length}</span>}
+            {/* Sin número mientras carga: un "0" provisorio parece un dato real. */}
+            {!loading && <span className="tab-count">{despachosNacionales.length}</span>}
           </button>
         )}
         <button className={`btn small ${pageTab === 'contenedor' ? 'primary' : 'outline'}`} onClick={() => selectPageTab('contenedor')}>
           En contenedor
-          {pageTab === 'contenedor'
-            ? <span style={{ marginLeft: 6, opacity: 0.85 }}>({contenedoresExportacion.length})</span>
-            : <span className="tag ok" style={{ marginLeft: 6 }}>{contenedoresExportacion.length}</span>}
+          {/* Sin número mientras carga: un "0" provisorio parece un dato real. */}
+          {!loading && <span className="tab-count">{contenedoresExportacion.length}</span>}
         </button>
       </div>
 
       {loading ? (
         <SkeletonList count={2} lines={2} />
+      ) : loadError ? (
+        <ErrorState message="No se pudo cargar Embarque. Revise la conexión e intente de nuevo." onRetry={loadData} />
       ) : pageTab === 'lista' ? (
 
         /* Lista para embarque */
@@ -902,7 +702,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   key={order.id}
                   order={order}
                   onAsignar={() => openModalContainer(order)}
-                  onInforme={() => loadInforme(order)}
                   onReopen={() => handleReopenOrder(order.id)}
                   onDocumentos={() => setModalQuickDocs({ order })}
                   onReload={loadData}
@@ -917,23 +716,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         /* Despachos nacionales -- una venta Nacional CAES no tiene
            contenedor marítimo real (se despacha por camión), así que vive
            separada de "En contenedor" en vez de compartir ese rótulo. */
-        <div className="split">
-          <ContainerColumn title="Preparando" items={nacionalPreparando} tagClass="tag info"
-            emptyMessage="No hay despachos nacionales en preparación." />
-          <ContainerColumn title="Despachado" items={nacionalDespachado} tagClass="tag ok"
-            emptyMessage="Todavía no hay despachos nacionales despachados." />
-        </div>
+        renderContainerSections(nacionalPreparando, nacionalDespachado, 'Todavía no hay despachos nacionales.')
 
       ) : (
 
         /* En contenedor -- 2 columnas por estado, para diferenciar de un
            vistazo qué contenedores ya se despacharon de los que todavía no. */
-        <div className="split">
-          <ContainerColumn title="Cargado" items={contenedoresCargado} tagClass="tag info"
-            emptyMessage="No hay contenedores en preparación o cargados." />
-          <ContainerColumn title="Despachado" items={contenedoresDespachado} tagClass="tag ok"
-            emptyMessage="Todavía no hay contenedores despachados." />
-        </div>
+        renderContainerSections(contenedoresCargado, contenedoresDespachado, 'Todavía no hay contenedores.')
 
       )}
 
@@ -964,7 +753,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           container={modalControlTransporte.container}
           orders={modalControlTransporte.orders}
           webUser={webUser}
-          onClose={() => setModalControlTransporte(null)}
+          onClose={() => { setModalControlTransporte(null); setControlsVersion(v => v + 1) }}
         />
       )}
 
@@ -986,7 +775,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                 values={formContainer}
                 onChange={(key, value) => setFormContainer(prev => ({ ...prev, [key]: value }))}
               />
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => setModalContainer(null)} disabled={saving}>Cancelar</button>
@@ -1044,11 +833,13 @@ ${BUNQUE_ALLOCATIONS_SELECT}
               </div>
 
               <DynamicForm
-                fields={dispatchFields}
+                fields={dispatchFields.filter(f =>
+                  // Almacén portuario: solo exportación.
+                  !(f.key === 'fecha_ingreso_almacen_portuario' && isOrderNacional(COOPERATIVE, modalDispatch?.order)))}
                 values={formDispatch}
                 onChange={(key, value) => setFormDispatch(prev => ({ ...prev, [key]: value }))}
               />
-              {error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+              {error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
             </div>
             <div className="modal-actions">
               <button className="btn small" onClick={() => setModalDispatch(null)} disabled={saving}>Cancelar</button>
@@ -1058,18 +849,6 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             </div>
           </div>
         </div>
-      )}
-
-      {/* ── Informe de trazabilidad ───────────────────────────────────────────── */}
-      {informeOrden && (
-        <InformeOrden
-          order={informeOrden}
-          containerNumber={containersMap[informeOrden.container_id]?.container_number}
-          data={informeData}
-          loading={informeLoading}
-          onClose={() => { setInformeOrden(null); setInformeData(null) }}
-          quickDocs={QUICK_DOCS}
-        />
       )}
 
       {/* ── Documentos rápidos por orden ─────────────────────────────────────── */}
@@ -1082,6 +861,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
           initialBatch={modalQuickDocs.initialBatch}
           onClose={() => setModalQuickDocs(null)}
           quickDocs={QUICK_DOCS}
+          fieldDocs={FIELD_DOCS}
         />
       )}
     </div>

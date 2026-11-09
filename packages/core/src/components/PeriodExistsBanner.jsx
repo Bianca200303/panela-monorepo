@@ -6,7 +6,7 @@
 // activo, ver [[project_higiene_personal_caes_registro_rapido]].
 export default function PeriodExistsBanner({ periodLabel, responsiblePerson, onOpen }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8, padding: '8px 10px', background: 'var(--warning-bg)', border: '1px solid #fcd34d', borderRadius: 8 }}>
       <span style={{ fontSize: 12 }}>
         Ya existe un control para {periodLabel}, registrado por {responsiblePerson ?? '—'}.
       </span>

@@ -1,8 +1,13 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
 import { useAuthStore } from '../store/authStore'
 import { useConfirm } from '../hooks/useConfirm'
 import { useCooperative } from '../lib/cooperativeContext'
-import { getBunqueLabelPlural } from '../lib/labels'
+import { getBunqueLabelPlural, getBunqueLabelPluralLower } from '../lib/labels'
+import Icon from './Icon'
+import Toaster from './Toaster'
+import { trackScreen } from '../lib/usage'
 
 export default function Layout() {
   const COOPERATIVE = useCooperative()
@@ -10,6 +15,35 @@ export default function Layout() {
   const { webUser, signOut } = useAuthStore()
   const navigate = useNavigate()
   const { confirm, dialog: confirmDialog } = useConfirm()
+  const location = useLocation()
+
+  // Aviso global si la cooperativa no tiene campaña activa: no bloquea nada,
+  // pero sin campaña los bunques nuevos quedan sin campaña y no se
+  // sugiere su numeración (ver BunquesPage.jsx). Se vuelve a consultar en cada
+  // cambio de ruta, así desaparece al volver de Catálogos tras abrir una.
+  const [hasActiveCampaign, setHasActiveCampaign] = useState(true)
+  useEffect(() => {
+    if (!webUser) return
+    supabase
+      .from('campaigns')
+      .select('id')
+      .eq('cooperative_id', COOPERATIVE.id)
+      .eq('is_active', true)
+      .limit(1)
+      .then(({ data, error }) => {
+        // Con error de red no se avisa: sería una falsa alarma.
+        if (!error) setHasActiveCampaign(data.length > 0)
+      })
+  }, [webUser, COOPERATIVE.id, location.pathname, location.search])
+
+  // Uso del sistema: una pantalla por ruta; las pestañas que viven en la URL
+  // (?tab=) cuentan como pantallas propias, ej. /controles/cloro-residual.
+  const screenTab = new URLSearchParams(location.search).get('tab')
+  useEffect(() => {
+    if (webUser?.id) trackScreen(screenTab ? `${location.pathname}/${screenTab}` : location.pathname)
+  }, [webUser?.id, location.pathname, screenTab])
+
+  const onCampaignsTab = location.pathname === '/catalogos' && new URLSearchParams(location.search).get('tab') === 'campanas'
 
   const handleSignOut = async () => {
     const ok = await confirm({
@@ -47,8 +81,9 @@ export default function Layout() {
             <li><NavLink to="/calidad" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Calidad</NavLink></li>
             <li><NavLink to="/ordenes" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Órdenes</NavLink></li>
             <li><NavLink to="/bunques" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>{BUNQUE_LABEL_PLURAL}</NavLink></li>
-            <li><NavLink to="/embarque" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Embarque</NavLink></li>
             <li><NavLink to="/controles" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Controles</NavLink></li>
+            {/* Orden → Lote → Controles → Despacho/Embarque (venta nacional = despacho, exportación = embarque). */}
+            <li><NavLink to="/embarque" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>{COOPERATIVE?.features?.ventaNacionalExportacion ? 'Despacho / Embarque' : 'Embarque'}</NavLink></li>
             <li><NavLink to="/catalogos" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Catálogos</NavLink></li>
             <li><NavLink to="/reportes" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>Reportes</NavLink></li>
             {webUser?.role === 'admin_web' && (
@@ -65,6 +100,20 @@ export default function Layout() {
         </nav>
       </header>
 
+      {!hasActiveCampaign && !onCampaignsTab && (
+        <div className="campaign-alert" role="alert">
+          <div className="campaign-alert-inner">
+            <Icon name="alertTriangle" size={18} />
+            <span className="campaign-alert-text">
+              <strong>No hay una campaña activa.</strong> Los {getBunqueLabelPluralLower(COOPERATIVE)} que se registren quedarán sin campaña.
+            </span>
+            <button className="btn small warning" onClick={() => navigate('/catalogos?tab=campanas')}>
+              Activar campaña
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="container">
         <Outlet />
       </main>
@@ -74,6 +123,7 @@ export default function Layout() {
       </footer>
 
       {confirmDialog}
+      <Toaster />
     </>
   )
 }

@@ -1,11 +1,11 @@
-import { PRINT_STYLES, fmtDate, fmtDateTime, buildFirmasHTML, escapeHtml } from './shared'
+import { escapeHtml, fmtDate } from './shared'
+import { buildCampoDocHTML, campoExcelHeader, writeCampoExcel, fetchCampoModuloRecords, campoModulosBodyHTML } from './campoOrden'
 
-export const FORMAT_TYPE_FCP  = 'FCP'
 export const FORMAT_TITLE_FCP = 'FORMATO DE CONTROL DE PLAGAS'
 
-export function buildPrintHTMLFcp(cooperative, formatCode, moduleName, dateFrom, dateTo, emittedAt, pestControls, firmantes) {
-  const firmasHTML  = buildFirmasHTML(firmantes)
-  const emisionDate = emittedAt ? fmtDateTime(emittedAt) : '—'
+// Cuerpo del formato (sin el encabezado de emisión), compartido entre la
+// versión emitida de Reportes y la versión por orden (pestaña Campo).
+export function buildFcpBodyHTML(pestControls) {
 
   const baitEntries   = []
   const insectEntries = []
@@ -84,29 +84,53 @@ export function buildPrintHTMLFcp(cooperative, formatCode, moduleName, dateFrom,
     ? baitSection + insectSection
     : '<p style="color:#999;text-align:center;padding:20px">Sin registros en este período</p>'
 
-  return `<!DOCTYPE html><html lang="es">
-<head><meta charset="UTF-8"><title>${FORMAT_TITLE_FCP}</title>
-  <style>${PRINT_STYLES}</style>
-</head>
-<body>
-  <div class="formato-header">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:13px;font-weight:700;text-transform:uppercase">${cooperative?.name ?? ''}</div>
-      <div style="font-size:14px;font-weight:800;margin-top:4px;text-transform:uppercase">${FORMAT_TITLE_FCP}</div>
-    </div>
-    <div class="formato-meta">
-      <div><span class="meta-label">Código:</span> <strong style="font-family:monospace">${formatCode ?? '(borrador)'}</strong></div>
-      <div><span class="meta-label">Fecha de emisión:</span> ${emisionDate}</div>
-      <div><span class="meta-label">Módulo:</span> ${moduleName}</div>
-      <div><span class="meta-label">Período:</span> ${fmtDate(dateFrom)} — ${fmtDate(dateTo)}</div>
-    </div>
-  </div>
-  <div style="margin-top:10px">${body}</div>
+  return `  <div style="margin-top:10px">${body}</div>
   <div style="margin-top:8px;padding:6px 8px;background:#f0f0f0;border:1px solid #ccc;font-size:11px;display:flex;gap:32px">
     <span><strong>Registros:</strong> ${pestControls?.length ?? 0}</span>
     <span><strong>Con cebos:</strong> ${baitEntries.length}</span>
     <span><strong>Con insectos:</strong> ${insectEntries.length}</span>
-  </div>
-  <div class="formato-firmas">${firmasHTML}</div>
-</body></html>`
+  </div>`
+}
+
+// ── Versión por ORDEN (pestaña Campo de Documentos) ─────────────────────────
+// Por módulo, los controles del MES (o meses) de producción de los lotes de
+// campo de la orden -- no se registran a diario.
+export function fetchFcpOrdenData(cooperative, order) {
+  return fetchCampoModuloRecords(cooperative, order, {
+    table: 'pest_controls',
+    select: `id, control_date,
+      pest_control_bait_records   ( id, product_name, quantity, unit, bait_stations, bait_observations ),
+      pest_control_insect_records ( id, product_name, quantity, unit, insect_data )`,
+    dateCol: 'control_date',
+    mode: 'mes',
+  })
+}
+
+export function fcpOrdenPdf(cooperative, order, containerNumber, data, firmantes) {
+  return buildCampoDocHTML(cooperative, order, containerNumber, {
+    key: 'fcp', title: FORMAT_TITLE_FCP, certNames: data.certNames, firmantes,
+    body: campoModulosBodyHTML(data, m => buildFcpBodyHTML(m.records), 'Sin controles de plagas en el período.'),
+  })
+}
+
+export function fcpOrdenExcel(cooperative, order, containerNumber, data) {
+  const header = campoExcelHeader(order, data.certNames, FORMAT_TITLE_FCP)
+  const cebos = [...header, ['Módulo', 'Fecha', 'Producto', 'Cantidad', 'Unidad', 'N° Estación', '¿Comió?', 'Observaciones']]
+  const insectos = [...header, ['Módulo', 'Fecha', 'Producto', 'Cantidad', 'Unidad', 'Área', 'Moscas', 'Abejas', 'Hormigas', 'Cucarachas', 'Observaciones']]
+  for (const m of data.modulos) for (const pc of m.records) {
+    for (const b of pc.pest_control_bait_records ?? []) {
+      const stations = b.bait_stations?.length ? b.bait_stations : [null]
+      for (const s of stations) {
+        cebos.push([m.name, pc.control_date, b.product_name ?? '', b.quantity ?? '', b.unit ?? '', s?.station_number ?? '', s ? (s.ate ? 'Sí' : 'No') : '', b.bait_observations ?? ''])
+      }
+    }
+    for (const ins of pc.pest_control_insect_records ?? []) {
+      const rows = ins.insect_data?.length ? ins.insect_data : [null]
+      for (const d of rows) {
+        insectos.push([m.name, pc.control_date, ins.product_name ?? '', ins.quantity ?? '', ins.unit ?? '', d?.area ?? '',
+          d?.flies ?? '', d?.bees ?? '', d?.ants ?? '', d?.cockroaches ?? '', d?.observations ?? ''])
+      }
+    }
+  }
+  writeCampoExcel('fcp', order, containerNumber, [['Control de cebos', cebos], ['Control de insectos', insectos]])
 }

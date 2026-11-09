@@ -1,3 +1,7 @@
+import { toast } from '../lib/toast'
+import { orderDatesBeforeReceptionError, toLocalDateStr } from '../lib/orderDates'
+import ClearableInput from '../components/ClearableInput'
+import { trackAction } from '../lib/usage'
 import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
@@ -7,6 +11,9 @@ import { loadKgPerSacoTamizado } from '../lib/formConfig'
 import { loteLabel, packagingLabel } from '../lib/loteHelpers'
 import { getLoteLabel, getLoteLabelLower, getVentaTag, getLoteLabelPluralLower, getBunqueLabel, getBunqueLabelLower, getBunqueLabelPlural, getBunqueLabelPluralLower } from '../lib/labels'
 import Icon from '../components/Icon'
+import AuditStamp from '../components/AuditStamp'
+import { AUDIT_COLUMNS } from '../lib/audit'
+import ErrorState from '../components/ErrorState'
 import { useConfirm } from '../hooks/useConfirm'
 import { SkeletonList } from '../components/Skeleton'
 
@@ -186,7 +193,7 @@ function clearBunqueDraft(bunqueId) {
 
 // hasCampaign distingue "campaña activa sin ningún número cargado todavía"
 // (sugiere '01', el primero) de "sin campaña activa" (no sugiere nada --
-// banner propio, se carga a mano, ver activeCampaign === null más abajo).
+// se carga a mano; el aviso de "sin campaña" es global, ver Layout.jsx).
 function suggestNextBunqueNumber(numbers, hasCampaign) {
   let maxNum = 0
   let width = 3
@@ -287,12 +294,15 @@ export default function BunquesPage() {
     }))
   }
 
+  // Error de carga de la lista o del stock: sin esto, un fallo se veía como
+  // "no hay bunques" o "no hay materia prima disponible".
+  const [loadError, setLoadError] = useState('')
   const loadBunques = async (campaign) => {
     if (!campaign) { setBunques([]); return [] }
-    const { data } = await supabase
+    const { data, error: loadErr } = await supabase
       .from('plant_batch_bunques')
       .select(`
-        id, bunque_number, tamizada_kg, reproceso_kg, descarte_kg, merma_kg,
+        id, bunque_number, tamizada_kg, reproceso_kg, descarte_kg, merma_kg, ${AUDIT_COLUMNS},
         tamizada_sacos, reproceso_sacos, descarte_sacos, processed_at,
         plant_homogenization_inputs ( id, source_exit_item_id, quantity_kg ),
         plant_bunque_batch_allocations (
@@ -304,17 +314,24 @@ export default function BunquesPage() {
       .eq('cooperative_id', COOPERATIVE.id)
       .eq('campaign_id', campaign.id)
       .order('created_at', { ascending: false })
+    if (loadErr) { setLoadError(loadErr.message); return [] }
     setBunques(data ?? [])
     return data ?? []
   }
 
   const loadStock = async () => {
-    const { data } = await supabase
+    const { data, error: loadErr } = await supabase
       .from('v_plant_available_stock')
       .select('*')
       .eq('cooperative_id', COOPERATIVE.id)
       .order('received_at', { ascending: false })
+    if (loadErr) { setLoadError(loadErr.message); return }
     setStockItems(data ?? [])
+  }
+
+  const retryLoad = async () => {
+    setLoadError('')
+    await Promise.all([loadBunques(activeCampaign), loadStock()])
   }
 
   const loadAllBunqueNumbers = async (campaign) => {
@@ -509,6 +526,8 @@ export default function BunquesPage() {
         .single()
       if (insErr) throw new Error(insErr.message)
 
+      toast.success(`${BUNQUE_LABEL} creado`)
+      trackAction('crear_bunque')
       const numbers = await loadAllBunqueNumbers(activeCampaign)
       setNewBunqueNumber(suggestNextBunqueNumber(numbers, !!activeCampaign))
       await loadBunques(activeCampaign)
@@ -549,6 +568,7 @@ export default function BunquesPage() {
         .eq('id', bunqueId)
       if (updErr) throw new Error(updErr.message)
       cancelEditNumber()
+      toast.success('Número actualizado')
       await loadBunques(activeCampaign)
     } catch (err) {
       setError(err.message)
@@ -580,6 +600,7 @@ export default function BunquesPage() {
       if (delErr) throw new Error(delErr.message)
       clearBunqueDraft(bunque.id)
       if (expandedBunqueId === bunque.id) setExpandedBunqueId(null)
+      toast.success(`${BUNQUE_LABEL} eliminado`)
       await loadBunques(activeCampaign)
     } catch (err) {
       setError(err.message)
@@ -628,7 +649,7 @@ export default function BunquesPage() {
     if (repartoRows.some(r => r.plant_batch_id === pb.id)) return
     if (pb.plant_orders?.status === 'completado') return
     const ord = pb.plant_orders
-    const label = `${loteLabel(pb)} — ${pb.brand ?? ''}${ord ? ` (orden ${ord.client_order_number || ord.order_code})` : ''}`
+    const label = `${loteLabel(pb)}${pb.brand ? ` — ${pb.brand}` : ''}${ord ? ` (orden ${ord.client_order_number || ord.order_code})` : ''}`
     setRepartoRows([...repartoRows, { plant_batch_id: pb.id, kg: '', label, sale_type: ord?.sale_type }])
     setLoteSearch('')
     setLoteResults([])
@@ -713,6 +734,26 @@ export default function BunquesPage() {
     const locked = lockedLoteIds(bunque)
     const repartoAbierto = repartoFiltered.filter(r => !locked.has(r.plant_batch_id))
 
+    // Las fechas de tamizado/envasado de las órdenes que reciben este reparto
+    // no pueden ser anteriores a la recepción de la materia prima del bunque.
+    if (repartoAbierto.length > 0) {
+      const receptionDate = filtered
+        .map(h => toLocalDateStr(stockItems.find(s => s.exit_item_id === h.source_exit_item_id)?.received_at))
+        .filter(Boolean).sort().pop() ?? null
+      if (receptionDate) {
+        const { data: lotesDest, error: lotesErr } = await supabase
+          .from('plant_production_batches')
+          .select('id, plant_orders ( order_code, client_order_number, tamizado_fecha_inicio, tamizado_fecha_fin, envasado_fecha_inicio, envasado_fecha_fin )')
+          .in('id', [...new Set(repartoAbierto.map(r => r.plant_batch_id))])
+        if (lotesErr) { setError(lotesErr.message); return false }
+        for (const l of lotesDest ?? []) {
+          const o = l.plant_orders
+          const msg = o && orderDatesBeforeReceptionError(o, receptionDate, o.client_order_number || o.order_code)
+          if (msg) { setError(`${msg} Corrija las fechas en "Editar orden" o elija otra materia prima.`); return false }
+        }
+      }
+    }
+
     setSaving(true)
     try {
       if (locked.size === 0) {
@@ -755,6 +796,7 @@ export default function BunquesPage() {
 
       clearBunqueDraft(bunque.id)
       setExpandedBunqueId(null)
+      toast.success(`${BUNQUE_LABEL} ${bunque.bunque_number} guardado`)
       await Promise.all([loadBunques(activeCampaign), loadStock()])
       return true
     } catch (err) {
@@ -792,7 +834,7 @@ export default function BunquesPage() {
   if (loading) {
     return (
       <div>
-        <div className="page-header"><h2>Gestión de {BUNQUE_LABEL_PLURAL}</h2></div>
+        <div className="page-header"><h2>{BUNQUE_LABEL_PLURAL}</h2></div>
         <SkeletonList count={4} lines={2} />
       </div>
     )
@@ -801,8 +843,12 @@ export default function BunquesPage() {
   return (
     <div>
       <div className="page-header">
-        <h2>Gestión de {BUNQUE_LABEL_PLURAL}</h2>
+        <h2>{BUNQUE_LABEL_PLURAL}</h2>
       </div>
+
+      {loadError && (
+        <ErrorState message={`No se pudieron cargar los ${BUNQUE_LABEL_PLURAL_LOWER} o la materia prima disponible. Revise la conexión e intente de nuevo.`} onRetry={retryLoad} />
+      )}
 
       {contextLote && (
         <div style={{
@@ -812,17 +858,11 @@ export default function BunquesPage() {
         }}>
           <Icon name="chevronRight" size={16} />
           <span style={{ fontSize: 13 }}>
-            Repartiendo para: <strong>{loteLabel(contextLote)}</strong> — {contextLote.brand} · {packagingLabel(contextLote)}
+            Repartiendo para: <strong>{loteLabel(contextLote)}</strong>{contextLote.brand ? ` — ${contextLote.brand}` : ''} · {packagingLabel(contextLote)}
             {contextLote.plant_orders ? ` · orden ${contextLote.plant_orders.client_order_number || contextLote.plant_orders.order_code}` : ''}
             <VentaTag cooperative={COOPERATIVE} order={contextLote.plant_orders} />
           </span>
         </div>
-      )}
-
-      {activeCampaign === null && (
-        <p className="muted small" style={{ margin: '0 0 12px' }}>
-          No hay una campaña activa configurada (Catálogos → Campañas) — el número de {BUNQUE_LABEL_LOWER} no se puede sugerir automáticamente ni filtrar por campaña, pero se puede seguir cargando a mano.
-        </p>
       )}
 
       {/* Crear y buscar van separados: son dos acciones distintas y antes,
@@ -831,12 +871,12 @@ export default function BunquesPage() {
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Crear nuevo {BUNQUE_LABEL_LOWER}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div className="field" style={{ margin: 0, flex: 1, minWidth: 160, maxWidth: 360 }}>
-            <label>N° de {BUNQUE_LABEL_LOWER}{activeCampaign ? <span className="muted small"> — campaña {activeCampaign.year}</span> : null}</label>
+            <label>Número{activeCampaign ? <span className="muted small"> · campaña {activeCampaign.year}</span> : null}</label>
             <input
               type="text"
               placeholder="Ej: 055"
               value={newBunqueNumber}
-              style={isDuplicateNumber ? { borderColor: 'var(--warning)', background: '#fffbeb' } : undefined}
+              style={isDuplicateNumber ? { borderColor: 'var(--warning)', background: 'var(--warning-bg)' } : undefined}
               onChange={e => setNewBunqueNumber(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && newBunqueNumber.trim() && !saving) handleCreateBunque() }}
             />
@@ -855,13 +895,13 @@ export default function BunquesPage() {
             Ya existe un {BUNQUE_LABEL_LOWER} con el número "{newBunqueNumber.trim()}" en esta campaña — se puede crear igual si es intencional.
           </p>
         )}
-        {expandedBunqueId == null && error && <p style={{ color: '#dc2626', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
+        {expandedBunqueId == null && error && <p style={{ color: 'var(--danger)', fontSize: 14, margin: '8px 0 0' }}>{error}</p>}
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
         <div className="field" style={{ margin: 0, flex: 1, minWidth: 160, maxWidth: 260 }}>
-          <label>Buscar {BUNQUE_LABEL_LOWER} por N°</label>
-          <input type="text" placeholder="Filtrar por número..." value={bunqueFilter} onChange={e => setBunqueFilter(e.target.value)} />
+          <label>Buscar por número</label>
+          <ClearableInput placeholder="Ej: 05" value={bunqueFilter} onChange={e => setBunqueFilter(e.target.value)} onClear={() => setBunqueFilter('')} />
         </div>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', paddingBottom: 8 }}>
           <input type="checkbox" checked={soloConDisponible} onChange={e => setSoloConDisponible(e.target.checked)} />
@@ -889,7 +929,7 @@ export default function BunquesPage() {
         const sinRepartir = Math.max(0, Number(bunque.tamizada_kg ?? 0) - repartidoTotal)
 
         return (
-          <div key={bunque.id} style={{ background: '#f9fafb', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+          <div key={bunque.id} style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
               {editingNumberId === bunque.id ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -912,6 +952,7 @@ export default function BunquesPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 14, fontWeight: 700 }}>{BUNQUE_LABEL} {bunque.bunque_number}</span>
                   <button className="btn small outline" style={{ fontSize: 11, padding: '1px 8px' }} onClick={() => startEditNumber(bunque)}>Cambiar N°</button>
+                  <AuditStamp row={bunque} />
                   {/* Resumen de kg en una sola línea -- el detalle (reparto
                       por lote, reproceso/descarte) se ve al abrir el bunque. */}
                   <span className="muted small">
@@ -977,7 +1018,7 @@ export default function BunquesPage() {
                 { label: 'Tamizado', kg: tam, color: 'var(--success)' },
                 { label: 'Reproceso', kg: rep, color: 'var(--primary)' },
                 { label: 'Descarte', kg: des, color: 'var(--warning)' },
-                { label: 'Merma', kg: Math.max(0, merma), color: bloqueado ? '#dc2626' : '#6b7280' },
+                { label: 'Merma', kg: Math.max(0, merma), color: bloqueado ? 'var(--danger)' : 'var(--text-tertiary)' },
               ]
               const repartoTotalLive = repartoRows.reduce((s, r) => s + (parseFloat(r.kg) || 0), 0)
               const repartoExcede = hasVals && repartoTotalLive > tam + 0.01
@@ -1031,7 +1072,7 @@ export default function BunquesPage() {
                     </div>
                   )}
                   {restoredDraft && (
-                    <div style={{ background: '#fffbeb', border: '1px solid var(--warning)', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 12, color: '#b45309' }}>
+                    <div style={{ background: 'var(--warning-bg)', border: '1px solid var(--warning)', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 12, color: 'var(--warning-strong)' }}>
                       Se recuperó un borrador sin guardar. Revíselo y guarde.
                     </div>
                   )}
@@ -1066,11 +1107,11 @@ export default function BunquesPage() {
                   {openStep === 1 && (<>
                   <div className="field" style={{ margin: '0 0 10px' }}>
                     <label>Buscar por guía de remisión</label>
-                    <input
-                      type="text"
+                    <ClearableInput
                       placeholder="Escriba el N° de guía de remisión..."
                       value={grSearch}
                       onChange={e => setGrSearch(e.target.value)}
+                      onClear={() => setGrSearch('')}
                     />
                   </div>
                   {/* Suele haber muchísimos insumos disponibles -- se
@@ -1123,7 +1164,7 @@ export default function BunquesPage() {
                                 ) : <span className="muted small">—</span>}
                               </td>
                               <td>
-                                <span style={{ color: avail <= 0 ? '#dc2626' : avail < 50 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
+                                <span style={{ color: avail <= 0 ? 'var(--danger)' : avail < 50 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
                                   {avail.toFixed(2)}
                                 </span>
                               </td>
@@ -1134,8 +1175,8 @@ export default function BunquesPage() {
                                   const empty = !(qty > 0)
                                   const cellStyle = {
                                     width: 80, padding: '5px 8px', borderRadius: 6,
-                                    border: `1px solid ${over ? '#dc2626' : empty ? 'var(--warning)' : 'var(--border)'}`,
-                                    background: over ? '#fee2e2' : empty ? '#fffbeb' : undefined,
+                                    border: `1px solid ${over ? 'var(--danger)' : empty ? 'var(--warning)' : 'var(--border)'}`,
+                                    background: over ? 'var(--danger-bg)' : empty ? 'var(--warning-bg)' : undefined,
                                   }
                                   if (modoSacos) {
                                     return (
@@ -1209,7 +1250,7 @@ export default function BunquesPage() {
                       { kg: 'descarte_kg', sacos: 'descarte_sacos', label: 'Descarte', req: true,
                         warn: resultadoIncompleto && desVacio, falta: 'Falta este dato — si no hubo descarte, escriba 0.' },
                     ].map(c => {
-                      const style = c.warn ? { borderColor: 'var(--warning)', background: '#fffbeb' } : c.err ? { borderColor: '#dc2626', background: '#fee2e2' } : undefined
+                      const style = c.warn ? { borderColor: 'var(--warning)', background: 'var(--warning-bg)' } : c.err ? { borderColor: 'var(--danger)', background: 'var(--danger-bg)' } : undefined
                       return (
                         <div key={c.kg} className="field" style={{ margin: 0 }}>
                           <label>
@@ -1248,19 +1289,19 @@ export default function BunquesPage() {
                           {liveTotal > 0 && <span className="muted">({(Math.max(0, merma) / liveTotal * 100).toFixed(1)}%)</span>}
                           <Hint text="La merma se calcula sola: materia prima − tamizada − reproceso − descarte. Pase el mouse sobre la barra para ver cada parte." />
                         </span>
-                        <span style={{ fontWeight: 700, color: balanceOk ? 'var(--success)' : '#dc2626', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontWeight: 700, color: balanceOk ? 'var(--success)' : 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <Icon name={balanceOk ? 'check' : 'x'} size={12} />
                           {balanceOk ? 'cierra el balance' : 'no cierra el balance'}
                         </span>
                       </div>
                       {tamExcede && (
-                        <p style={{ color: '#dc2626', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <p style={{ color: 'var(--danger)', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
                           <Icon name="x" size={13} />
                           La panela tamizada supera el total de materia prima — no es físicamente posible. Revise los kg.
                         </p>
                       )}
                       {sumaExcede && !tamExcede && (
-                        <p style={{ color: '#dc2626', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <p style={{ color: 'var(--danger)', margin: '6px 0 0', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
                           <Icon name="x" size={13} />
                           La suma tamizada + reproceso + descarte supera el total de materia prima de este {BUNQUE_LABEL_LOWER}. Revise los kg.
                         </p>
@@ -1298,7 +1339,7 @@ export default function BunquesPage() {
                       >
                         <div style={{
                           fontSize: 13, fontWeight: 700, color: '#fff',
-                          background: repartoExcede ? '#dc2626' : 'var(--primary)',
+                          background: repartoExcede ? 'var(--danger)' : 'var(--primary)',
                           borderRadius: 6, padding: '4px 10px',
                         }}>
                           Repartido: {repartoTotalLive.toFixed(2)} / {tam.toFixed(2)} kg
@@ -1321,10 +1362,11 @@ export default function BunquesPage() {
                       {contextLote && contextLote.plant_orders?.status !== 'completado' && !repartoRows.some(r => r.plant_batch_id === contextLote.id) && (
                         <button
                           className="btn small primary"
-                          style={{ marginBottom: 8 }}
+                          style={{ marginBottom: 8, display: 'inline-flex', alignItems: 'center', gap: 6 }}
                           onClick={() => addRepartoLote(contextLote)}
                         >
-                          + Agregar {loteLabel(contextLote)} (el {getLoteLabelLower(COOPERATIVE, contextLote.plant_orders)} que abriste)
+                          <Icon name="plus" size={14} />
+                          Agregar {getLoteLabelLower(COOPERATIVE, contextLote.plant_orders)} {loteLabel(contextLote)}
                         </button>
                       )}
                       {repartoRows.length > 0 && (
@@ -1350,7 +1392,7 @@ export default function BunquesPage() {
                                       style={{
                                         width: 90, padding: '5px 8px', borderRadius: 6,
                                         border: `1px solid ${parseFloat(r.kg) > 0 ? 'var(--border)' : 'var(--warning)'}`,
-                                        background: parseFloat(r.kg) > 0 ? undefined : '#fffbeb',
+                                        background: parseFloat(r.kg) > 0 ? undefined : 'var(--warning-bg)',
                                       }}
                                       onChange={e => updateRepartoKg(r.plant_batch_id, e.target.value)}
                                     />
@@ -1365,7 +1407,7 @@ export default function BunquesPage() {
                         </div>
                       )}
                       {repartoExcede && (
-                        <p style={{ color: '#dc2626', margin: '0 0 8px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <p style={{ color: 'var(--danger)', margin: '0 0 8px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
                           <Icon name="x" size={13} />
                           El reparto supera la panela tamizada de este {BUNQUE_LABEL_LOWER}.
                         </p>
@@ -1375,11 +1417,11 @@ export default function BunquesPage() {
                           Buscar {getLoteLabelLower(COOPERATIVE, repartoVenta)} por N°
                           <Hint text="Sin escribir nada se muestran los lotes de órdenes en proceso. Escriba 2 o más caracteres para buscar por N° en cualquier orden no completada." />
                         </label>
-                        <input
-                          type="text"
+                        <ClearableInput
                           placeholder="N° de lote..."
                           value={loteSearch}
                           onChange={e => setLoteSearch(e.target.value)}
+                          onClear={() => setLoteSearch('')}
                         />
                       </div>
                       {visibleLoteResults.length === 0 && (
@@ -1396,7 +1438,7 @@ export default function BunquesPage() {
                               onClick={() => addRepartoLote(pb)}
                             >
                               <span style={{ fontSize: 12 }}>
-                                {loteLabel(pb)} — {pb.brand} · {packagingLabel(pb)}{pb.plant_orders ? ` · orden ${pb.plant_orders.client_order_number || pb.plant_orders.order_code}` : ''}
+                                {loteLabel(pb)}{pb.brand ? ` — ${pb.brand}` : ''} · {packagingLabel(pb)}{pb.plant_orders ? ` · orden ${pb.plant_orders.client_order_number || pb.plant_orders.order_code}` : ''}
                                 <VentaTag cooperative={COOPERATIVE} order={pb.plant_orders} />
                               </span>
                               <button className="btn small primary" style={{ fontSize: 11 }} onClick={e => { e.stopPropagation(); addRepartoLote(pb) }}>+ Agregar</button>
@@ -1410,7 +1452,7 @@ export default function BunquesPage() {
                   {/* Qué falta para poder guardar -- se ve ANTES de hacer
                       clic, junto al botón (que queda desactivado). */}
                   {faltantes.length > 0 && (
-                    <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fee2e2', fontSize: 13, color: '#b91c1c' }}>
+                    <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', fontSize: 13, color: 'var(--danger-strong)' }}>
                       <div style={{ fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
                         <Icon name="alertTriangle" size={14} /> Para poder guardar, corrija:
                       </div>
@@ -1420,11 +1462,11 @@ export default function BunquesPage() {
                     </div>
                   )}
                   {avisos.length > 0 && (
-                    <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--warning)', background: '#fffbeb', fontSize: 12, color: '#b45309' }}>
+                    <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--warning)', background: 'var(--warning-bg)', fontSize: 12, color: 'var(--warning-strong)' }}>
                       {avisos.map(a => <div key={a}>{a}</div>)}
                     </div>
                   )}
-                  {error && <p style={{ color: '#dc2626', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
+                  {error && <p style={{ color: 'var(--danger)', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
                   <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                     {isDirty && <span className="muted small" style={{ color: 'var(--warning)' }}>Cambios sin guardar</span>}
                     <button className="btn small" onClick={() => attemptCollapseBunque(bunque)} disabled={saving}>Cerrar</button>

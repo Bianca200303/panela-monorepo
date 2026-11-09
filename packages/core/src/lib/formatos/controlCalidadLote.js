@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import { loteLabel } from '../loteHelpers'
-import { PRINT_STYLES, fmtNum, buildFirmasHTML, buildOrdenHeaderHTML, quickDocFileName, escapeHtml } from './shared'
+import { PRINT_STYLES, fmtNum, buildFirmasHTML, buildOrdenHeaderHTML, quickDocFileName, escapeHtml, containerExcelRows } from './shared'
 import { getLoteLabel } from '../labels'
 import { fetchOrderCertNames } from './registroTrazabilidad'
 
@@ -144,7 +144,7 @@ export function controlCalidadLoteExcel(cooperative, order, containerNumber, { r
   const certText = certNames?.length > 0 ? certNames.join(' - ').toUpperCase() : ''
   const aoa = [
     [getFormatTitleControlCalidadLote(cooperative)],
-    ['Contenedor N°:', order?.internal_container_number ?? ''],
+    ...containerExcelRows(order),
     ['Producto:', order?.product ?? ''],
     ['Cliente:', order?.plant_clients?.name ?? ''],
     ['Nº de venta:', order?.sale_number ?? ''],
