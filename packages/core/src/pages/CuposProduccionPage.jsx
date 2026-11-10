@@ -476,16 +476,33 @@ export default function CuposProduccionPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-        <h2 style={{ margin: '0 0 4px' }}>Cupos de producción por parcela</h2>
-        {campaigns?.length > 0 && (
-          <div className="field" style={{ margin: 0 }}>
-            <label>Campaña</label>
-            <select className="input" value={campaignId} onChange={e => setCampaignId(e.target.value)}>
-              {campaigns.map(c => (
-                <option key={c.id} value={c.id}>Campaña {c.year} ({campaignPeriod(c)}){c.is_active ? ' · activa' : ''}</option>
-              ))}
-            </select>
+      {/* Encabezado: campaña y acciones de la página (importar/exportar/nuevo)
+          separadas de los filtros de la lista, para que no se confundan. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
+          <h2 style={{ margin: '0 0 6px' }}>Cupos de producción por parcela</h2>
+          {campaigns?.length > 0 && (
+            <div className="field" style={{ margin: 0 }}>
+              <label>Campaña</label>
+              <select className="input" value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>Campaña {c.year} ({campaignPeriod(c)}){c.is_active ? ' · activa' : ''}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        {campaign && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn small outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => setShowImport(true)}>
+              <Icon name="upload" size={15} /> Importar Excel
+            </button>
+            <button className="btn small outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={handleExport} disabled={groups.length === 0}>
+              <Icon name="download" size={15} /> Exportar Excel
+            </button>
+            <button className="btn small primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={() => openNewQuota()}>
+              <Icon name="plus" size={15} /> Nuevo cupo
+            </button>
           </div>
         )}
       </div>
@@ -572,27 +589,23 @@ export default function CuposProduccionPage() {
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {FILTERS.map(f => (
-              <button key={f.key} className={`btn small ${activeFilter === f.key ? 'primary' : 'outline'}`} onClick={() => setFilter(f.key)}>
-                {f.label} ({counts[f.key]})
-              </button>
-            ))}
-            <select className="input" style={{ width: 'auto', padding: '4px 8px' }} value={moduleFilter} onChange={e => setModuleFilter(e.target.value)}>
-              <option value="">Todos los módulos</option>
-              {modules.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
-            </select>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn small outline" onClick={() => setShowImport(true)}>Importar Excel</button>
-            <button className="btn small outline" onClick={handleExport} disabled={groups.length === 0}>Exportar Excel</button>
-            <button className="btn small primary" onClick={() => openNewQuota()}>+ Nuevo cupo</button>
-          </div>
+        <div className="segmented" role="tablist" style={{ flexWrap: 'wrap', borderRadius: 14, marginBottom: 10 }}>
+          {FILTERS.map(f => (
+            <button key={f.key} role="tab" aria-selected={activeFilter === f.key}
+              className={activeFilter === f.key ? 'active' : ''} onClick={() => setFilter(f.key)}>
+              {f.label} <span style={{ fontWeight: 400, opacity: 0.8 }}>{counts[f.key]}</span>
+            </button>
+          ))}
         </div>
-        <div style={{ marginBottom: 10 }}>
-          <ClearableInput className="input" placeholder="Buscar por productor, DNI, parcela o código..."
-            value={tableSearch} onChange={e => setTableSearch(e.target.value)} onClear={() => setTableSearch('')} />
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 260px' }}>
+            <ClearableInput className="input" placeholder="Buscar por productor, DNI, parcela o código..."
+              value={tableSearch} onChange={e => setTableSearch(e.target.value)} onClear={() => setTableSearch('')} />
+          </div>
+          <select className="input" style={{ flex: '0 1 220px', width: 'auto' }} value={moduleFilter} onChange={e => setModuleFilter(e.target.value)}>
+            <option value="">Todos los módulos</option>
+            {modules.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+          </select>
         </div>
 
         {loading || !plots ? (
