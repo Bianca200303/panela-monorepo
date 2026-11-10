@@ -100,22 +100,34 @@ export function quotaSheetRows(plots, quotas) {
 // Se usan en la importación y en el formulario de cupo.
 //   previousKg: cupo actual (null si es nuevo)
 //   usedKg: panela ya registrada contra ese cupo
-//   referenceKg: cupo típico de la cooperativa (mediana), o null
-const BIG_CHANGE = 3
-const OUTLIER = 5
-export function quotaWarnings({ cupoKg, previousKg = null, usedKg = 0, referenceKg = null }) {
+//   referenceKg: cupo de referencia (ver quotaReferenceKg), o null
+//   rules: { changeFactor, outlierFactor } de la campaña (quotaRules)
+export function quotaWarnings({ cupoKg, previousKg = null, usedKg = 0, referenceKg = null, rules = DEFAULT_RULES }) {
+  const { changeFactor, outlierFactor } = rules
   const warnings = []
-  if (previousKg > 0 && (cupoKg >= previousKg * BIG_CHANGE || cupoKg <= previousKg / BIG_CHANGE)) {
+  if (previousKg > 0 && (cupoKg >= previousKg * changeFactor || cupoKg <= previousKg / changeFactor)) {
     warnings.push(`cambia mucho respecto del cupo actual (${fmtKg(previousKg)} kg)`)
   }
   if (usedKg > cupoKg) {
     warnings.push(`queda por debajo de lo ya usado (${fmtKg(usedKg)} kg)`)
   }
-  if (referenceKg > 0 && cupoKg >= referenceKg * OUTLIER) {
-    warnings.push(`es mucho mayor que el cupo habitual (${fmtKg(referenceKg)} kg)`)
+  if (referenceKg > 0 && cupoKg >= referenceKg * outlierFactor) {
+    warnings.push(`es mucho mayor que el cupo de referencia (${fmtKg(referenceKg)} kg)`)
   }
   return warnings
 }
+
+// Parámetros de aviso de la campaña (Catálogos → Campañas,
+// 20261109110000_campanas_parametros_aviso_cupo.sql).
+const DEFAULT_RULES = { changeFactor: 3, outlierFactor: 5 }
+export const quotaRules = (campaign) => ({
+  changeFactor: Number(campaign?.change_factor) > 1 ? Number(campaign.change_factor) : DEFAULT_RULES.changeFactor,
+  outlierFactor: Number(campaign?.outlier_factor) > 1 ? Number(campaign.outlier_factor) : DEFAULT_RULES.outlierFactor,
+})
+
+// Cupo de referencia: el fijado en la campaña; si no hay, la mediana.
+export const quotaReferenceKg = (campaign, values) =>
+  Number(campaign?.reference_quota_kg) > 0 ? Number(campaign.reference_quota_kg) : typicalQuotaKg(values)
 
 const fmtKg = (n) => Number(n).toLocaleString('es-PE', { maximumFractionDigits: 2 })
 
@@ -138,7 +150,7 @@ export function typicalQuotaKg(values) {
 //   unchanged: cupos iguales a los ya cargados (la plantilla los trae
 //     llenos): no se envían
 //   ignoredColumns: encabezados que no son datos de la parcela ni una certificación
-export function validateQuotaRows(rows, { plots, certs, quotas }) {
+export function validateQuotaRows(rows, { plots, certs, quotas, campaign = null }) {
   const certKey = (c) => `cert:${c.id}`
   const columns = {
     ...ID_COLUMNS,
@@ -237,13 +249,15 @@ export function validateQuotaRows(rows, { plots, certs, quotas }) {
     unchanged += rowUnchanged
   })
 
-  // Cupo habitual: el del archivo junto con los ya cargados que no cambian.
+  // Cupo de referencia: el de la campaña o, si no tiene, la mediana del
+  // archivo junto con los ya cargados que no cambian.
   const replaced = new Set(ready.map(r => quotaKey(r.plot.id, r.cert.id)))
-  const referenceKg = typicalQuotaKg([
+  const referenceKg = quotaReferenceKg(campaign, [
     ...ready.map(r => r.cupoKg),
     ...quotas.filter(q => !replaced.has(quotaKey(q.plot_id, q.cert_id))).map(q => Number(q.cupo_kg)),
   ])
-  for (const r of ready) r.warnings = quotaWarnings({ ...r, referenceKg })
+  const rules = quotaRules(campaign)
+  for (const r of ready) r.warnings = quotaWarnings({ ...r, referenceKg, rules })
 
   return { ready, errors, skipped, unchanged, ignoredColumns }
 }

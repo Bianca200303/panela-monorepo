@@ -9,7 +9,7 @@ import Icon from '../components/Icon'
 import { useConfirm } from '../hooks/useConfirm'
 import { exportSheetsToExcel } from '../lib/excelExport'
 import ImportarCuposModal from './ImportarCuposModal'
-import { fetchActivePlots, fetchQuotasByCampaign, fetchProductionWithoutQuota, fetchProductionOutsideCampaign, quotaWarnings, typicalQuotaKg, quotaSheetColumns, quotaSheetRows } from '../lib/quotaImport'
+import { fetchActivePlots, fetchQuotasByCampaign, fetchProductionWithoutQuota, fetchProductionOutsideCampaign, quotaWarnings, quotaReferenceKg, quotaRules, quotaSheetColumns, quotaSheetRows } from '../lib/quotaImport'
 import { fetchAllRows } from '../lib/fetchAllRows'
 import { fetchCampaigns, defaultCampaign, previousCampaign, campaignPeriod, formatIsoDate } from '../lib/campaigns'
 
@@ -327,14 +327,15 @@ export default function CuposProduccionPage() {
   const takenCertIds = (plotId) => new Set(quotas.filter(q => q.plot_id === plotId).map(q => q.cert_id))
   const modalTakenCerts = modalForm && !modalForm.quotaId ? takenCertIds(modalForm.plotId) : new Set()
 
-  const typicalKg = useMemo(() => typicalQuotaKg(quotas.map(q => Number(q.cupo_kg))), [quotas])
+  const referenceKg = useMemo(() => quotaReferenceKg(campaign, quotas.map(q => Number(q.cupo_kg))), [campaign, quotas])
   const editedQuota = modalForm?.quotaId ? quotas.find(q => q.quota_id === modalForm.quotaId) : null
   const modalWarnings = modalForm && Number(modalForm.cupoKg) > 0
     ? quotaWarnings({
         cupoKg: Number(modalForm.cupoKg),
         previousKg: editedQuota ? Number(editedQuota.cupo_kg) : null,
         usedKg: editedQuota ? Number(editedQuota.acumulado_kg) : 0,
-        referenceKg: typicalKg,
+        referenceKg,
+        rules: quotaRules(campaign),
       })
     : []
 

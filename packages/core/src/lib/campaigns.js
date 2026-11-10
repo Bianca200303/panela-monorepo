@@ -26,7 +26,7 @@ function addDaysIso(iso, days) {
 // Campañas de la cooperativa, la más reciente primero.
 export async function fetchCampaigns(cooperativeId) {
   const { data, error } = await supabase.from('campaigns')
-    .select('id, year, start_date, end_date, is_active')
+    .select('id, year, start_date, end_date, is_active, reference_quota_kg, outlier_factor, change_factor')
     .eq('cooperative_id', cooperativeId)
     .order('start_date', { ascending: false })
   if (error) throw error

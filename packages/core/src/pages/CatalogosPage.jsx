@@ -34,7 +34,18 @@ const emptyFormDefaults = { client_id: '', default_packaging_type: '', default_u
 // El producto no está amarrado a un cliente: sirve para cualquier orden.
 const emptyFormProducto = { code: '', description: '', brand_id: '', packaging_type: 'bolsa', packaging_kg: '' }
 const emptyFormPersonal = { first_name: '', last_name: '' }
-const emptyFormCampaign = { id: null, year: '', start_date: '', end_date: '' }
+const emptyFormCampaign = { id: null, year: '', start_date: '', end_date: '', reference_quota_kg: '', outlier_factor: '5', change_factor: '3' }
+// Avisos de cupo de la campaña (20261109110000_campanas_parametros_aviso_cupo.sql):
+// referencia vacía = automática (mediana); factores > 1.
+const campaignQuotaFields = (f) => ({
+  reference_quota_kg: Number(f.reference_quota_kg) > 0 ? Number(f.reference_quota_kg) : null,
+  outlier_factor: Number(f.outlier_factor),
+  change_factor: Number(f.change_factor),
+})
+const campaignQuotaError = (f) =>
+  (f.reference_quota_kg !== '' && !(Number(f.reference_quota_kg) > 0)) ? 'El cupo de referencia debe ser mayor a 0 o quedar vacío'
+  : !(Number(f.outlier_factor) > 1) || !(Number(f.change_factor) > 1) ? 'Las veces deben ser mayores a 1'
+  : ''
 const emptyFormWorker = { first_name: '', last_name: '', coop_module_id: '', dni: '', position: '', certified_since: '', certified_until: '', notes: '' }
 
 // Días de anticipación para avisar "Por vencer" en la certificación.
@@ -301,7 +312,7 @@ export default function CatalogosPage() {
   const loadCampaigns = () =>
     supabase
       .from('campaigns')
-      .select(`id, year, start_date, end_date, is_active, ${AUDIT_COLUMNS}`)
+      .select(`id, year, start_date, end_date, is_active, reference_quota_kg, outlier_factor, change_factor, ${AUDIT_COLUMNS}`)
       .eq('cooperative_id', COOPERATIVE.id)
       .order('year', { ascending: false })
       .then(handleLoad('campanas', setCampaigns))
@@ -695,7 +706,12 @@ export default function CatalogosPage() {
     const maxYear = campaigns.reduce((m, c) => Math.max(m, c.year), 0)
     // Solo una sugerencia editable, igual que el N° de bunque -- nunca
     // restringe: el usuario puede tipear cualquier año.
-    setFormCampaign({ ...emptyFormCampaign, year: maxYear > 0 ? String(maxYear + 1) : String(new Date().getFullYear()) })
+    const last = campaigns.find(c => c.year === maxYear)
+    setFormCampaign({
+      ...emptyFormCampaign,
+      year: maxYear > 0 ? String(maxYear + 1) : String(new Date().getFullYear()),
+      ...(last ? { reference_quota_kg: last.reference_quota_kg ?? '', outlier_factor: String(last.outlier_factor ?? 5), change_factor: String(last.change_factor ?? 3) } : {}),
+    })
     setModalCampaign(true)
   }
 
@@ -703,23 +719,29 @@ export default function CatalogosPage() {
   // recalculan solos: lo usado se calcula desde los lotes).
   const openEditCampaign = (c) => {
     setCampaignError('')
-    setFormCampaign({ id: c.id, year: String(c.year), start_date: c.start_date ?? '', end_date: c.end_date ?? '' })
+    setFormCampaign({
+      id: c.id, year: String(c.year), start_date: c.start_date ?? '', end_date: c.end_date ?? '',
+      reference_quota_kg: c.reference_quota_kg ?? '', outlier_factor: String(c.outlier_factor ?? 5), change_factor: String(c.change_factor ?? 3),
+    })
     setModalCampaign(true)
   }
 
   const handleSaveCampaign = async () => {
     setCampaignError('')
+    const quotaErr = campaignQuotaError(formCampaign)
+    if (quotaErr) { setCampaignError(quotaErr); return }
     if (formCampaign.id) {
       setSavingCampaign(true)
       try {
         const { error: updErr } = await supabase.from('campaigns').update({
           start_date: formCampaign.start_date || null,
           end_date: formCampaign.end_date || null,
+          ...campaignQuotaFields(formCampaign),
         }).eq('id', formCampaign.id)
         if (updErr) throw new Error(updErr.message)
         setModalCampaign(false)
         setFormCampaign(emptyFormCampaign)
-        toast.success(`Periodo de la campaña ${formCampaign.year} actualizado`)
+        toast.success(`Campaña ${formCampaign.year} actualizada`)
         loadCampaigns()
       } catch (err) {
         setCampaignError(err.message)
@@ -740,6 +762,7 @@ export default function CatalogosPage() {
         year: yearNum,
         start_date: formCampaign.start_date || null,
         end_date: formCampaign.end_date || null,
+        ...campaignQuotaFields(formCampaign),
       })
       if (insErr) throw new Error(insErr.message)
       setModalCampaign(false)
@@ -1140,9 +1163,9 @@ export default function CatalogosPage() {
                 audit={c}
                 title={`Campaña ${c.year}`}
                 badges={<span className={`tag ${c.is_active ? 'ok' : ''}`}>{c.is_active ? 'Activa' : 'Cerrada'}</span>}
-                subtitle={campaignPeriod(c)}
+                subtitle={`${campaignPeriod(c)} · Referencia de cupo: ${c.reference_quota_kg ? `${Number(c.reference_quota_kg).toLocaleString('es-PE')} kg` : 'automática'}`}
                 actions={<>
-                  <button className="btn small outline" disabled={savingCampaign} onClick={() => openEditCampaign(c)}>Editar periodo</button>
+                  <button className="btn small outline" disabled={savingCampaign} onClick={() => openEditCampaign(c)}>Editar</button>
                   {c.is_active ? (
                     <button className="btn small danger" disabled={savingCampaign} onClick={() => handleCloseCampaign(c)}>Cerrar campaña</button>
                   ) : (
@@ -1612,7 +1635,7 @@ export default function CatalogosPage() {
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-body">
-              <h3 style={{ margin: '0 0 16px' }}>{formCampaign.id ? `Periodo de la campaña ${formCampaign.year}` : 'Nueva campaña'}</h3>
+              <h3 style={{ margin: '0 0 16px' }}>{formCampaign.id ? `Campaña ${formCampaign.year}` : 'Nueva campaña'}</h3>
               {!formCampaign.id && (
                 <div className="field">
                   <label>Año *</label>
@@ -1641,6 +1664,27 @@ export default function CatalogosPage() {
                   />
                 </div>
               </div>
+              <h4 style={{ margin: '16px 0 8px' }}>Avisos de cupo</h4>
+              <div className="field">
+                <label>Cupo de referencia (kg)</label>
+                <input type="number" min="0" step="0.1" placeholder="Automático (mediana de los cupos)"
+                  value={formCampaign.reference_quota_kg}
+                  onChange={e => setFormCampaign({ ...formCampaign, reference_quota_kg: e.target.value })} />
+              </div>
+              <div className="grid two" style={{ gap: 8 }}>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Avisar si supera la referencia (veces)</label>
+                  <input type="number" min="1.1" step="0.5"
+                    value={formCampaign.outlier_factor}
+                    onChange={e => setFormCampaign({ ...formCampaign, outlier_factor: e.target.value })} />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Avisar si cambia respecto del cupo actual (veces)</label>
+                  <input type="number" min="1.1" step="0.5"
+                    value={formCampaign.change_factor}
+                    onChange={e => setFormCampaign({ ...formCampaign, change_factor: e.target.value })} />
+                </div>
+              </div>
               {!formCampaign.id && (
                 <p className="muted small" style={{ marginTop: 8 }}>
                   Se crea cerrada; se abre desde la lista.
@@ -1651,7 +1695,7 @@ export default function CatalogosPage() {
             <div className="modal-actions">
               <button className="btn small" onClick={() => { setModalCampaign(false); setCampaignError(''); setFormCampaign(emptyFormCampaign) }} disabled={savingCampaign}>Cancelar</button>
               <button className="btn small primary" onClick={handleSaveCampaign} disabled={savingCampaign}>
-                {savingCampaign ? 'Guardando...' : formCampaign.id ? 'Guardar periodo' : 'Crear campaña'}
+                {savingCampaign ? 'Guardando...' : formCampaign.id ? 'Guardar' : 'Crear campaña'}
               </button>
             </div>
           </div>

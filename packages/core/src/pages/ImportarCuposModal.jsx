@@ -22,8 +22,8 @@ export default function ImportarCuposModal({ plots, campaign, quotas, certs, onC
   const result = useMemo(() => {
     if (!file) return null
     if (file.error) return { error: file.error }
-    return validateQuotaRows(file.rows, { plots, certs, quotas })
-  }, [file, plots, certs, quotas])
+    return validateQuotaRows(file.rows, { plots, certs, quotas, campaign })
+  }, [file, plots, certs, quotas, campaign])
 
   const downloadTemplate = () => {
     exportTableToExcel({
