@@ -518,12 +518,12 @@ export default function CuposProduccionPage() {
           {showOutside && (
             <div style={{ marginTop: 8, maxHeight: 220, overflow: 'auto' }}>
               <table className="table small">
-                <thead><tr>{['Fecha de proceso', 'Lote', 'Productor', 'Parcela', 'Panela kg'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{['Fecha de proceso', 'Recibo de acopio', 'Productor', 'Parcela', 'Panela kg'].map(h => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {outside.map(o => (
                     <tr key={o.batch_id}>
                       <td>{formatIsoDate(o.process_date)}</td>
-                      <td>{o.batch_code}</td>
+                      <td>{o.receipts || '—'}</td>
                       <td>{o.producer_name}</td>
                       <td>{o.plot_name ?? '—'}{o.plot_code ? ` · ${o.plot_code}` : ''}</td>
                       <td>{kg(o.panela_kg)}</td>
