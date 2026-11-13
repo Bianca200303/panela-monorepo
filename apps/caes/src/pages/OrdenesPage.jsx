@@ -22,6 +22,7 @@ import { SkeletonList } from '@panela/core/components/Skeleton'
 import EmptyState from '@panela/core/components/EmptyState'
 import ErrorState from '@panela/core/components/ErrorState'
 import Icon from '@panela/core/components/Icon'
+import ClearableInput from '@panela/core/components/ClearableInput'
 import LoteStockNotice from '@panela/core/components/LoteStockNotice'
 import SearchFilterBar from '@panela/core/components/SearchFilterBar'
 import DateInput from '@panela/core/components/DateInput'
@@ -163,6 +164,7 @@ export default function OrdenesPage() {
 
   const [showStock, setShowStock] = useState(false)
   const [showAgotados, setShowAgotados] = useState(false)
+  const [stockSearch, setStockSearch] = useState('')
   const [stockPage, setStockPage] = useState(1)
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
@@ -944,7 +946,11 @@ ${BUNQUE_ALLOCATIONS_SELECT}
     available: Number(s.kg_available ?? 0),
   }))
   const stockAgotadosCount = stockSummary.filter(s => s.available <= 0).length
-  const stockVisible = showAgotados ? stockSummary : stockSummary.filter(s => s.available > 0)
+  const stockNeedle = stockSearch.trim().toLowerCase()
+  const stockVisible = stockSummary
+    .filter(s => showAgotados || s.available > 0)
+    .filter(s => !stockNeedle || [s.comprobante_acopio, s.guia_remision, s.producer_name, s.module_name]
+      .some(v => v != null && String(v).toLowerCase().includes(stockNeedle)))
   const stockTotalPages = Math.max(1, Math.ceil(stockVisible.length / STOCK_PAGE_SIZE))
   const stockPageSafe = Math.min(stockPage, stockTotalPages)
   const stockPageItems = stockVisible.slice((stockPageSafe - 1) * STOCK_PAGE_SIZE, stockPageSafe * STOCK_PAGE_SIZE)
@@ -956,7 +962,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn small outline" onClick={() => setShowStock(s => !s)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Icon name={showStock ? 'chevronUp' : 'chevronDown'} size={14} />
-            {showStock ? 'Ocultar stock' : 'Stock de lotes origen'}
+            {showStock ? 'Ocultar stock' : 'Stock de materia prima'}
           </button>
           <button className="btn primary" onClick={() => { setModalOrden(true); setError(''); setOrderDatesError('') }}>
             + Nueva orden
@@ -969,24 +975,35 @@ ${BUNQUE_ALLOCATIONS_SELECT}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
             <h4 style={{ margin: 0 }}>
-              Stock acumulado de lotes de origen
-              <span className="tag info" style={{ marginLeft: 8 }}>{stockVisible.length} lotes</span>
+              Stock de materia prima
+              <span className="tag info" style={{ marginLeft: 8 }}>{stockVisible.length} comprobantes</span>
               {stockAgotadosCount > 0 && (
                 <span className="tag warn" style={{ marginLeft: 6 }}>{stockAgotadosCount} agotados</span>
               )}
             </h4>
-            <button
-              className="btn small outline"
-              onClick={() => { setShowAgotados(v => !v); setStockPage(1) }}
-            >
-              {showAgotados ? 'Ocultar agotados' : 'Mostrar agotados'}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <ClearableInput
+                className="input"
+                placeholder="Buscar por comprobante, GR, productor o módulo..."
+                value={stockSearch}
+                onChange={e => { setStockSearch(e.target.value); setStockPage(1) }}
+                onClear={() => { setStockSearch(''); setStockPage(1) }}
+                style={{ minWidth: 280 }}
+              />
+              <button
+                className="btn small outline"
+                onClick={() => { setShowAgotados(v => !v); setStockPage(1) }}
+              >
+                {showAgotados ? 'Ocultar agotados' : 'Mostrar agotados'}
+              </button>
+            </div>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table className="table small">
               <thead>
                 <tr>
-                  <th>Lote</th>
+                  <th>Comprobante de acopio</th>
+                  <th>GR</th>
                   <th>Módulo</th>
                   <th>Productor</th>
                   <th>Recibido (kg)</th>
@@ -1001,7 +1018,8 @@ ${BUNQUE_ALLOCATIONS_SELECT}
                   const pctUsed = received > 0 ? (used / received * 100) : 0
                   return (
                     <tr key={s.exit_item_id} style={{ opacity: available <= 0 ? 0.6 : 1 }}>
-                      <td><strong>{s.comprobante_acopio ?? s.guia_remision ?? '—'}</strong></td>
+                      <td><strong>{s.comprobante_acopio ?? '—'}</strong></td>
+                      <td>{s.guia_remision ?? '—'}</td>
                       <td>{s.module_name ?? '—'}</td>
                       <td>{s.producer_name ?? '—'}</td>
                       <td>{received.toFixed(1)}</td>
@@ -1029,7 +1047,7 @@ ${BUNQUE_ALLOCATIONS_SELECT}
             </table>
           </div>
           {stockVisible.length === 0 && (
-            <EmptyState message={showAgotados ? 'No hay lotes registrados.' : 'No hay lotes disponibles (todos agotados).'} />
+            <EmptyState message={stockNeedle ? 'Sin resultados para la búsqueda.' : showAgotados ? 'No hay materia prima registrada.' : 'No hay materia prima disponible (todo agotado).'} />
           )}
           {stockTotalPages > 1 && (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 10 }}>
